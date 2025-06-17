@@ -3,7 +3,6 @@ name: Build Keil2Json Executable
 on:
   push:
 
-
 jobs:
   build:
     runs-on: ${{ matrix.os }}
