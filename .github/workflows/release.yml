@@ -50,7 +50,7 @@ jobs:
         run: |
           source venv/bin/activate
           pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Keil2Json.py
-        shell: powershell
+        shell: bash
 
       - name: Build Keil2Json executable (Windows)
         if: matrix.os == 'windows-latest'
