@@ -82,11 +82,7 @@ jobs:
           path: Keil2Json-${{ matrix.os }}.zip
 
   release:
-    needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      deployments: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -96,19 +92,16 @@ jobs:
       - name: Merge artifacts into output directory
         run: |
           mkdir -p output
-          for file in artifacts/*.zip; do
-            # 从文件名提取平台标识(如windows-latest)
-            platform=$(basename "$file" .zip | cut -d'-' -f2-)
+          for dir in artifacts/*/; do
+            platform=$(basename "$dir")
             mkdir -p "output/$platform"
-            unzip "$file" -d "output/$platform/"
+            find "$dir" -name "*.zip" -exec unzip {} -d "output/$platform" \;
           done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            output/**/*
-          tag_name: v${{ github.ref_name }}
-          generate_release_notes: true
+          files: output/**/*
+          tag_name: ${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
