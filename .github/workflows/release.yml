@@ -1,0 +1,82 @@
+name: Build Keil2Json Executable
+
+on:
+  push:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+        python-version:
+          - "3.9"
+        include:
+          - os: windows-latest
+            script-ext: ".exe"
+            pyinstaller-args: "--uac-admin"
+          - os: ubuntu-latest
+            script-ext: ""
+            pyinstaller-args: ""
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Create virtual environment and install dependencies
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          pip install pyinstaller
+
+      - name: Build Keil2Json executable
+        run: |
+          source venv/bin/activate
+          pyinstaller -F ${{ matrix.pyinstaller-args }} Keil2Json.py
+        shell: bash
+
+      - name: zip executable
+        run: |
+          mkdir -p dist
+          cp dist/Keil2Json${{ matrix.script-ext }} dist/
+          zip -r Keil2Json-${{ matrix.os }}.zip dist/
+        shell: bash
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: Keil2Json-${{ matrix.os }}
+          path: Keil2Json-${{ matrix.os }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      deployments: write
+    steps:
+      - name: download artifact
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: merge artifacts
+        run: |
+          mkdir -p dist
+          for file in artifacts/*.zip; do
+            unzip "$file" -d dist/
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
