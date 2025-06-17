@@ -87,7 +87,7 @@ jobs:
     permissions:
       contents: write
       deployments: write
-      steps:
+    steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
