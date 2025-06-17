@@ -82,7 +82,11 @@ jobs:
           path: Keil2Json-${{ matrix.os }}.zip
 
   release:
+    needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      deployments: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -101,7 +105,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: output/**/*
-          tag_name: ${{ github.ref_name }}
+          files: |
+            output/**/*
+          tag_name: v${{ github.ref_name }}
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
