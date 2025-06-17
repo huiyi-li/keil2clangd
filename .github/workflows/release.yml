@@ -2,7 +2,8 @@ name: Build Keil2Json Executable
 
 on:
   push:
-
+    tags:
+      - 'v*'
 jobs:
   build:
     runs-on: ${{ matrix.os }}
