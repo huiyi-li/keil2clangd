@@ -108,7 +108,7 @@ jobs:
         with:
           files: |
             output/**/*
-          tag_name: v${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
