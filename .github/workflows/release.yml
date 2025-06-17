@@ -3,6 +3,7 @@ name: Build Keil2Json Executable
 on:
   push:
 
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -49,22 +50,39 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           source venv/bin/activate
-          pyinstaller -F ${{ matrix.pyinstaller-args }} Keil2Json.py
+          pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Keil2Json.py
         shell: bash
 
       - name: Build Keil2Json executable (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           venv\Scripts\activate
-          pyinstaller -F ${{ matrix.pyinstaller-args }} Keil2Json.py
+          pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Keil2Json.py
+        shell: cmd
+
+      - name: Debug: Check dist directory (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          dir dist
         shell: cmd
 
       - name: Zip executable
+        if: matrix.os == 'ubuntu-latest'
         run: |
           mkdir -p output
-          cp dist/Keil2Json${{ matrix.script-ext }} output/
-          zip -r Keil2Json-${{ matrix.os }}.zip output/
+          cp dist/Keil2Json output/
+          zip -r Keil2Json-ubuntu-latest.zip output/
         shell: bash
+
+      - name: Zip executable (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir output
+          copy dist\Keil2Json.exe output\
+          cd output
+          zip -r ..\Keil2Json-windows-latest.zip *
+          cd ..
+        shell: cmd
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
