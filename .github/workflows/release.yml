@@ -22,7 +22,7 @@ jobs:
             pyinstaller-args: ""
 
     steps:
-      - name: checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Python ${{ matrix.python-version }}
@@ -31,25 +31,42 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Create virtual environment and install dependencies
+        if: matrix.os == 'ubuntu-latest'
         run: |
           python -m venv venv
           source venv/bin/activate
           pip install pyinstaller
 
+      - name: Create virtual environment and install dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          python -m venv venv
+          venv\Scripts\activate
+          pip install pyinstaller
+        shell: cmd
+
       - name: Build Keil2Json executable
+        if: matrix.os == 'ubuntu-latest'
         run: |
           source venv/bin/activate
           pyinstaller -F ${{ matrix.pyinstaller-args }} Keil2Json.py
         shell: bash
 
-      - name: zip executable
+      - name: Build Keil2Json executable (Windows)
+        if: matrix.os == 'windows-latest'
         run: |
-          mkdir -p dist
-          cp dist/Keil2Json${{ matrix.script-ext }} dist/
-          zip -r Keil2Json-${{ matrix.os }}.zip dist/
+          venv\Scripts\activate
+          pyinstaller -F ${{ matrix.pyinstaller-args }} Keil2Json.py
+        shell: cmd
+
+      - name: Zip executable
+        run: |
+          mkdir -p output
+          cp dist/Keil2Json${{ matrix.script-ext }} output/
+          zip -r Keil2Json-${{ matrix.os }}.zip output/
         shell: bash
 
-      - name: upload artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Keil2Json-${{ matrix.os }}
@@ -62,21 +79,21 @@ jobs:
       contents: write
       deployments: write
     steps:
-      - name: download artifact
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: merge artifacts
+      - name: Merge artifacts into output directory
         run: |
-          mkdir -p dist
+          mkdir -p output
           for file in artifacts/*.zip; do
-            unzip "$file" -d dist/
+            unzip "$file" -d output/
           done
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/*
+          files: output/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
