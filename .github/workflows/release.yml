@@ -44,27 +44,21 @@ jobs:
           python -m venv venv
           venv\Scripts\activate
           pip install pyinstaller
-        shell: cmd
+        shell: powershell
 
       - name: Build Keil2Json executable
         if: matrix.os == 'ubuntu-latest'
         run: |
           source venv/bin/activate
           pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Keil2Json.py
-        shell: bash
+        shell: powershell
 
       - name: Build Keil2Json executable (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           venv\Scripts\activate
           pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Keil2Json.py
-        shell: cmd
-
-      - name: Debug: Check dist directory (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          dir dist
-        shell: cmd
+        shell: powershell
 
       - name: Zip executable
         if: matrix.os == 'ubuntu-latest'
@@ -79,10 +73,8 @@ jobs:
         run: |
           mkdir output
           copy dist\Keil2Json.exe output\
-          cd output
-          zip -r ..\Keil2Json-windows-latest.zip *
-          cd ..
-        shell: cmd
+          powershell Compress-Archive -Path output\* -DestinationPath Keil2Json-windows-latest.zip
+        shell: powershell
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -96,7 +88,7 @@ jobs:
     permissions:
       contents: write
       deployments: write
-    steps:
+      steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -106,12 +98,18 @@ jobs:
         run: |
           mkdir -p output
           for file in artifacts/*.zip; do
-            unzip "$file" -d output/
+            # 从文件名提取平台标识(如windows-latest)
+            platform=$(basename "$file" .zip | cut -d'-' -f2-)
+            mkdir -p "output/$platform"
+            unzip "$file" -d "output/$platform/"
           done
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          files: output/*
+          files: |
+            output/**/*
+          tag_name: v${{ github.ref_name }}
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
