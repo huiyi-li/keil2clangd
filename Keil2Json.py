@@ -125,7 +125,7 @@ class CompileCommandsGenerator:
         # 查找当前目录下的uvprojx文件
         uvprojx_files = list(Path(self.path).glob('**/*.uvprojx'))
         if not uvprojx_files:
-            print("未找到.uvprojx文件")
+            print("cannot find any .uvprojx file in current directory")
             return
 
         # 处理第一个找到的uvprojx文件
@@ -135,8 +135,7 @@ class CompileCommandsGenerator:
 
         entries = self.generate_entries(self.include_paths, self.defines, self.source_files)
         self.write_json(entries)
-
-        print(f"生成完成：compile_commands.json（{'绝对路径版' if self.absolute else ''}）")
+        print(f"generate complete: compile_commands.json ({'absolute path' if self.absolute else 'relative path'})")
 
 
 if __name__ == '__main__':

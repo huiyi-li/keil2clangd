@@ -50,3 +50,10 @@ python Keil2Json.py -a
 ## 注意事项
 
 - 脚本默认使用python3.x版本。
+- clangd插件如果需要自动包含keil的include路径，需要在clangd的设置中添加`--query-driver=/path/to/keil/include`参数。
+- 对于uint32_t等类型无法正常识别，需要在工程文件夹下创建.clangd文件，并添加以下内容：
+
+``` yaml
+CompileFlags:
+  Add: [-include, stdint.h]
+```
