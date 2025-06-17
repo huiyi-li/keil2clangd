@@ -50,7 +50,7 @@ jobs:
         shell: bash
 
       - name: upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Keil2Json-${{ matrix.os }}
           path: Keil2Json-${{ matrix.os }}.zip
@@ -63,7 +63,7 @@ jobs:
       deployments: write
     steps:
       - name: download artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
