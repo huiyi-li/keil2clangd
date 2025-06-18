@@ -136,7 +136,16 @@ class CompileCommandsGenerator:
         entries = self.generate_entries(self.include_paths, self.defines, self.source_files)
         self.write_json(entries)
         print(f"generate complete: compile_commands.json ({'absolute path' if self.absolute else 'relative path'})")
+        clangd_content = "CompileFlags:\n  Add: [-include, stdint.h]\n"
 
+        clangd_path = self.project_root / ".clangd"
+
+        try:
+            with open(clangd_path, 'w') as clangd_file:
+                clangd_file.write(clangd_content)
+            print(f"Write to .clangd file: {clangd_path}")
+        except Exception as e:
+            print(f"Failed to write to .clangd file: {e}")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate compile_commands.json for vscode')
