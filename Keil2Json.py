@@ -136,7 +136,7 @@ class CompileCommandsGenerator:
         entries = self.generate_entries(self.include_paths, self.defines, self.source_files)
         self.write_json(entries)
         print(f"generate complete: compile_commands.json ({'absolute path' if self.absolute else 'relative path'})")
-        clangd_content = "CompileFlags:\n  Add: [-include, stdint.h]\n"
+        clangd_content = "CompileFlags:\n  Add: [-include, stdint.h, -include, stdbool.h]\n"
 
         clangd_path = self.project_root / ".clangd"
 
