@@ -3,6 +3,7 @@ import json
 import argparse
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import shlex
 
 
 class CompileCommandsGenerator:
@@ -85,11 +86,12 @@ class CompileCommandsGenerator:
 
         # 构建基础编译参数
         base_args = [
-            "-c",
+            # "-c",
             "-D__GNUC__",
         ] + [f"-I{p}" for p in processed_include_paths] + \
         [f"-D{define}" for define in defines]
-
+        
+        compiler = "arm-none-eabi-gcc"
         # 处理源文件路径：根据 self.absolute 决定是否转为相对路径
         entries = []
         for file in source_files:
@@ -107,8 +109,12 @@ class CompileCommandsGenerator:
                 # 保留绝对路径并替换分隔符 [[6]]
                 file_entry = str(file_path).replace("\\", "/")
 
+            # command_args = base_args + [file_entry]
+            command_str = compiler + " " + "-c " + file_entry + " " + "-IC:/Keil_v5/Packs/ARM/CMSIS/5.9.0/CMSIS/Core/Include " + " ".join(shlex.quote(arg) for arg in base_args)
+
             # 构建 JSON 条目
             entry = {
+                "command": command_str,
                 "arguments": base_args.copy(),
                 "directory": compile_dir_str,  # 始终为绝对路径且分隔符统一 [[6]]
                 "file": file_entry
@@ -136,16 +142,7 @@ class CompileCommandsGenerator:
         entries = self.generate_entries(self.include_paths, self.defines, self.source_files)
         self.write_json(entries)
         print(f"generate complete: compile_commands.json ({'absolute path' if self.absolute else 'relative path'})")
-        clangd_content = "CompileFlags:\n  Add: [-include, stdint.h, -include, stdbool.h]\n"
 
-        clangd_path = self.project_root / ".clangd"
-
-        try:
-            with open(clangd_path, 'w') as clangd_file:
-                clangd_file.write(clangd_content)
-            print(f"Write to .clangd file: {clangd_path}")
-        except Exception as e:
-            print(f"Failed to write to .clangd file: {e}")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate compile_commands.json for vscode')
