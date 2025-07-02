@@ -110,7 +110,8 @@ class CompileCommandsGenerator:
                 file_entry = str(file_path).replace("\\", "/")
 
             # command_args = base_args + [file_entry]
-            command_str = compiler + " " + "-c " + file_entry + " " + "-IC:/Keil_v5/Packs/ARM/CMSIS/5.9.0/CMSIS/Core/Include " + " ".join(shlex.quote(arg) for arg in base_args)
+            # command_str = compiler + " " + "-c " + file_entry + " " + "-IC:/Keil_v5/Packs/ARM/CMSIS/5.9.0/CMSIS/Core/Include " + " ".join(shlex.quote(arg) for arg in base_args)
+            command_str = compiler + " " + "-c " + file_entry + " " +  " ".join(shlex.quote(arg) for arg in base_args)
 
             # 构建 JSON 条目
             entry = {
