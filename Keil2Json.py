@@ -7,9 +7,18 @@ import shlex
 
 
 class CompileCommandsGenerator:
-    def __init__(self, path=None, absolute=False):
+    def collect_all_headers(self):
+        header_files = []
+        for root, dirs, files in os.walk(self.project_root):
+            for file in files:
+                if file.endswith('.h'):
+                    header_files.append(os.path.join(root, file).replace("\\", "/"))
+        return header_files
+
+    def __init__(self, path=None, absolute=False, keil_implicit=True):
         self.path = path if path else '.'
         self.absolute = absolute
+        self.keil_implicit = keil_implicit
         self.project_root = None
         self.include_paths = []
         self.defines = []
@@ -84,13 +93,19 @@ class CompileCommandsGenerator:
                 # 保留绝对路径并替换分隔符 [[6]]
                 processed_include_paths.append(str(abs_path).replace("\\", "/"))
 
+        # 收集所有头文件（仅在 keil_implicit 为 True 时启用）
+        include_args = []
+        if self.keil_implicit:
+            all_headers = self.collect_all_headers()
+            include_args = [f'-include {header}' for header in all_headers]
+
         # 构建基础编译参数
         base_args = [
             # "-c",
             "-D__GNUC__",
         ] + [f"-I{p}" for p in processed_include_paths] + \
         [f"-D{define}" for define in defines]
-        
+
         compiler = "arm-none-eabi-gcc"
         # 处理源文件路径：根据 self.absolute 决定是否转为相对路径
         entries = []
@@ -109,15 +124,13 @@ class CompileCommandsGenerator:
                 # 保留绝对路径并替换分隔符 [[6]]
                 file_entry = str(file_path).replace("\\", "/")
 
-            # command_args = base_args + [file_entry]
-            # command_str = compiler + " " + "-c " + file_entry + " " + "-IC:/Keil_v5/Packs/ARM/CMSIS/5.9.0/CMSIS/Core/Include " + " ".join(shlex.quote(arg) for arg in base_args)
-            command_str = compiler + " " + "-c " + file_entry + " " +  " ".join(shlex.quote(arg) for arg in base_args)
+            # command_str 加入所有头文件的 -include 参数
+            command_str = compiler + " -c " + file_entry + " " + " ".join(shlex.quote(arg) for arg in base_args + include_args)
 
-            # 构建 JSON 条目
             entry = {
                 "command": command_str,
-                "arguments": base_args.copy(),
-                "directory": compile_dir_str,  # 始终为绝对路径且分隔符统一 [[6]]
+                "arguments": base_args.copy() + include_args.copy(), # 基础的参数加上所有头文件的include参数
+                "directory": compile_dir_str,
                 "file": file_entry
             }
             entries.append(entry)
@@ -149,7 +162,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate compile_commands.json for vscode')
     parser.add_argument('--path', '-p', required=False, help='Specify the path of .uvprojx file')
     parser.add_argument('--absolute', '-a', action='store_true', required=False, help='Format with Absolute path')
+    parser.add_argument('--keil-implicit', '-k', action='store_true', required=False,
+                        help='Implicitly add all included headers to every C file (Keil style, default: True)')
     args = parser.parse_args()
 
-    generator = CompileCommandsGenerator(path=args.path, absolute=args.absolute)
+    generator = CompileCommandsGenerator(path=args.path, absolute=args.absolute, keil_implicit=args.keil_implicit)
     generator.generate()
