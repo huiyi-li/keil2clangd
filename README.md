@@ -1,4 +1,7 @@
-# 为Keil MDK开发环境生成 clangd和vscode的c插件生成对应的配置文件脚本
+# 为Keil MDK以及IAR开发环境生成 clangd和vscode的c插件生成对应的配置文件脚本
+
+本工具添加IAR的支持，使用方式与keil相同，为了方便不同用户使用，二者暂不合并，IAR用户使用的脚本名称为Ewp2Json.py，Keil用户使用的脚本名称为xx2Json.py
+使用方式完全一致，请根据需要选择使用即可。
 
 ## 使用方式
 
@@ -7,12 +10,12 @@
 ``` bash
 https://github.com/huiyi-li/keil2clangd.git
 ```
-
-- 复制Keil2Json.py脚本到工程项目目录下。
+**注意： xxx代表Keil或Ewp**
+- 复制xxx2Json.py脚本到工程项目目录下。
 - 使用python执行脚本(默认搜索当前终端路径的keil prj文件生成对应的配置文件)
 
 ``` bash
-python Keil2Json.py
+python xxx2Json.py
 ```
 
 - 脚本会在目录生成对应的compile_commands.json文件，使用该文件可以帮助插件进行跳转解析。
@@ -25,25 +28,25 @@ python Keil2Json.py
 示例：
 
 ``` bash
-python Keil2Json.py -p D:\KeilProject
+python xx2Json.py -p D:\KeilProject
 ```
 
 - `-a` 指定生成的compalte_commands.json文件的.c和include path为绝对路径。
 示例：
 
 ``` bash
-python Keil2Json.py -a
+python xx2Json.py -a
 ```
 
 - -p 和 -a 选项可以同时使用。
 
 ## 使用release页面使用pyinstaller打包成exe文件的脚本
 
-- 下载release页面的Keil2Json.exe文件。
-- 将Keil2Json.exe文件防止到系统的path环境变量目录中。
+- 下载release页面的xx2Json.exe文件。
+- 将xx2Json.exe文件防止到系统的path环境变量目录中。
 例如：
 我的电脑设置了`C:\MinGW\bin`为系统环境变量，将Kiil2Json.exe文件复制到`C:\MinGW\bin`目录下。
-- 打开cmd，输入`Keil2Json.exe`命令即可直接运行，不需要每次将exe复制到keil工程目录下。
+- 打开cmd，输入`xx2Json.exe`命令即可直接运行，不需要每次将exe复制到keil工程目录下。
 - 注意：keil工程目录下必须有keil uvprojx文件，否则会提示找不到文件。
 - 使用脚本生成的时候建议使用powershell，cd到工程所在目录
 
