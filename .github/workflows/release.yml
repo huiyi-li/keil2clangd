@@ -1,4 +1,4 @@
-name: Build Keil2Json Executable
+name: Build Keil2Json and Ewp2Json Executables
 
 on:
   push:
@@ -60,27 +60,43 @@ jobs:
           pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Keil2Json.py
         shell: powershell
 
-      - name: Zip executable
+      - name: Build Ewp2Json executable
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          source venv/bin/activate
+          pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Ewp2Json.py
+        shell: bash
+
+      - name: Build Ewp2Json executable (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          venv\Scripts\activate
+          pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Ewp2Json.py
+        shell: powershell
+
+      - name: Package executables
         if: matrix.os == 'ubuntu-latest'
         run: |
           mkdir -p output
           cp dist/Keil2Json output/
-          zip -r Keil2Json-ubuntu-latest.zip output/
+          cp dist/Ewp2Json output/
+          zip -r tools-ubuntu-latest.zip output/
         shell: bash
 
-      - name: Zip executable (Windows)
+      - name: Package executables (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           mkdir output
           copy dist\Keil2Json.exe output\
-          powershell Compress-Archive -Path output\* -DestinationPath Keil2Json-windows-latest.zip
+          copy dist\Ewp2Json.exe output\
+          powershell Compress-Archive -Path output\* -DestinationPath tools-windows-latest.zip
         shell: powershell
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Keil2Json-${{ matrix.os }}
-          path: Keil2Json-${{ matrix.os }}.zip
+          name: tools-${{ matrix.os }}
+          path: tools-${{ matrix.os }}.zip
 
   release:
     needs: build
