@@ -31,7 +31,7 @@ python xxx2Json.py
 python xx2Json.py -p D:\KeilProject
 ```
 
-- `-a` 指定生成的compalte_commands.json文件的.c和include path为绝对路径。
+- `-a` 指定生成的compile_commands.json文件的.c和include path为绝对路径。
 示例：
 
 ``` bash
