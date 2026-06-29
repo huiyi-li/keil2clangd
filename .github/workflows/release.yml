@@ -17,10 +17,8 @@ jobs:
         include:
           - os: windows-latest
             script-ext: ".exe"
-            pyinstaller-args: "--uac-admin"
           - os: ubuntu-latest
             script-ext: ""
-            pyinstaller-args: ""
 
     steps:
       - name: Checkout code
@@ -50,14 +48,14 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           source venv/bin/activate
-          pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Keil2Json.py
+          python -m PyInstaller --clean --noconfirm --onefile --console --name Keil2Json --distpath dist Keil2Json.py
         shell: bash
 
       - name: Build Keil2Json executable (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           venv\Scripts\activate
-          pyinstaller -F ${{ matrix.pyinstaller-args }} --distpath dist Keil2Json.py
+          python -m PyInstaller --clean --noconfirm --onefile --console --name Keil2Json --distpath dist Keil2Json.py
         shell: powershell
 
       - name: Zip executable
