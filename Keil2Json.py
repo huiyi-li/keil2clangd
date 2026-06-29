@@ -388,6 +388,146 @@ def find_iar_c_include(iar_path):
     return str(include.resolve()) if include.is_dir() else ""
 
 
+def find_uv4_executable(config_manager=None, override=None):
+    candidates = []
+    if override:
+        candidates.append(Path(override).expanduser())
+
+    if config_manager:
+        keil_path = config_manager.get("keil", "install_path")
+        if keil_path:
+            root = Path(keil_path)
+            candidates.extend([
+                root / "UV4" / "UV4.exe",
+                root.parent / "UV4" / "UV4.exe" if root.name.lower() == "arm" else root / "UV4" / "UV4.exe",
+            ])
+
+    candidates.extend([
+        Path(r"C:\Keil_v5\UV4\UV4.exe"),
+        Path(r"C:\Keil\UV4\UV4.exe"),
+    ])
+
+    path_value = os.environ.get("PATH", "")
+    for path_dir in path_value.split(os.pathsep):
+        if path_dir:
+            candidates.append(Path(path_dir) / "UV4.exe")
+
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate).lower() if IS_WINDOWS else str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists() and candidate.is_file():
+            return str(candidate.resolve())
+    return ""
+
+
+def parse_keil_targets(project_file):
+    tree = ET.parse(project_file)
+    root = tree.getroot()
+    targets = []
+    for elem in root.findall(".//Target/TargetName"):
+        if elem.text and elem.text.strip():
+            targets.append(elem.text.strip())
+    return targets
+
+
+def build_keil_uv4_command(uv4, project_file, output, action, target=None, jobs=None, show_window=False):
+    action_map = {
+        "build": "-b",
+        "rebuild": "-r",
+        "clean": "-c",
+        "flash": "-f",
+        "download": "-f",
+        "debug": "-d",
+    }
+    action = (action or "build").lower()
+    if action not in action_map:
+        raise ValueError(f"unsupported Keil action: {action}")
+
+    command = [uv4]
+    if action != "debug" and not show_window:
+        if jobs is None:
+            jobs = 16 if action == "build" else 0
+        command.append(f"-j{jobs}")
+    command.extend([
+        action_map[action],
+        str(project_file),
+        "-o",
+        str(output),
+    ])
+    if target:
+        command.extend(["-t", target])
+    return command
+
+
+def run_keil_uv4(project_path, action, target=None, jobs=None, show_window=False,
+                uv4_path=None, log_path=None, config_manager=None, list_targets=False):
+    if not IS_WINDOWS:
+        raise RuntimeError("Keil UV4 command execution is only supported on Windows.")
+
+    detector = CompileCommandsGenerator(path=project_path, config_manager=config_manager)
+    project_file = detector.detect_project()
+    if project_file.suffix.lower() != ".uvprojx":
+        raise RuntimeError(f"Keil UV4 requires a .uvprojx project, got: {project_file}")
+
+    targets = parse_keil_targets(project_file)
+    if list_targets:
+        print(f"Project: {project_file}")
+        if targets:
+            print("Targets:")
+            for item in targets:
+                print(f"  {item}")
+        else:
+            print("No TargetName found.")
+        return 0
+
+    if target and targets and target not in targets:
+        print(f"Warning: target '{target}' was not found in project target list.")
+        print("Available targets:")
+        for item in targets:
+            print(f"  {item}")
+
+    uv4 = find_uv4_executable(config_manager=config_manager, override=uv4_path)
+    if not uv4:
+        raise FileNotFoundError("UV4.exe was not found. Configure Keil path with --setup or pass --keil_uv4.")
+
+    action = (action or "build").lower()
+    if action not in {"build", "rebuild", "clean", "flash", "download", "debug"}:
+        raise ValueError(f"unsupported Keil action: {action}")
+
+    output = Path(log_path).expanduser() if log_path else detector.project_root / ("build_log" if action == "build" else "Prg_Output")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        output.write_text("", encoding="utf-8")
+
+    command = build_keil_uv4_command(uv4, project_file, output, action, target, jobs, show_window)
+
+    print("Running:", " ".join(f'"{arg}"' if " " in arg else arg for arg in command))
+    creationflags = 0
+    if IS_WINDOWS and not show_window and action != "debug":
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    result = subprocess.run(
+        command,
+        cwd=str(detector.project_root),
+        creationflags=creationflags,
+        check=False,
+    )
+
+    if output.exists():
+        try:
+            print(output.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            pass
+
+    print(f"Keil {action} finished with exit code {result.returncode}.")
+    if action == "debug" and not show_window:
+        print("Debug action always starts the Keil window.")
+    return result.returncode
+
+
 def detect_keil_compiler_type(project_file):
     tree = ET.parse(project_file)
     root = tree.getroot()
@@ -849,6 +989,19 @@ def main():
     parser.add_argument("--setup", "-s", action="store_true", help="Run setup wizard and save config")
     parser.add_argument("--show-config", action="store_true", help="Print saved config and exit")
     parser.add_argument("--dry-run", "-n", action="store_true", help="For Makefile projects use make -n after make clean")
+    parser.add_argument("--keil_build", action="store_true", help="Run Keil UV4 command instead of generating compile_commands.json")
+    parser.add_argument(
+        "--keil_action",
+        choices=["build", "rebuild", "clean", "flash", "download", "debug"],
+        default="build",
+        help="Keil UV4 action used with --keil_build",
+    )
+    parser.add_argument("--target", "-t", help="Keil target name used with --keil_build")
+    parser.add_argument("--list-targets", action="store_true", help="List Keil targets and exit")
+    parser.add_argument("--keil_uv4", help="Override UV4.exe path")
+    parser.add_argument("--keil_jobs", type=int, help="Keil UV4 -j value used when hiding the Keil window; debug never uses -j")
+    parser.add_argument("--keil_log", help="Keil UV4 output log path")
+    parser.add_argument("--keil_window", action="store_true", help="Show Keil window while running UV4; debug always shows the window")
     args = parser.parse_args()
 
     manager = ConfigManager()
@@ -859,8 +1012,22 @@ def main():
 
     if args.setup or not manager.exists():
         first_run_setup(manager)
-        if args.setup and not args.path:
+        if args.setup and not args.path and not args.keil_build and not args.list_targets:
             return
+
+    if args.keil_build or args.list_targets:
+        exit_code = run_keil_uv4(
+            project_path=args.path,
+            action=args.keil_action,
+            target=args.target,
+            jobs=args.keil_jobs,
+            show_window=args.keil_window or args.keil_action == "debug",
+            uv4_path=args.keil_uv4,
+            log_path=args.keil_log,
+            config_manager=manager,
+            list_targets=args.list_targets,
+        )
+        raise SystemExit(exit_code)
 
     generator = CompileCommandsGenerator(
         path=args.path,

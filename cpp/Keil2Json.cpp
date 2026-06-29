@@ -110,6 +110,10 @@ static fs::path config_path() {
     fs::path base = appdata ? fs::path(appdata) : fs::path(std::getenv("USERPROFILE") ? std::getenv("USERPROFILE") : ".");
     return base / "KeilFormat" / "config.json";
 #else
+    const char* xdg_config_home = std::getenv("XDG_CONFIG_HOME");
+    if (xdg_config_home && *xdg_config_home) {
+        return fs::path(xdg_config_home) / "KeilFormat" / "config.json";
+    }
     const char* home = std::getenv("HOME");
     return fs::path(home ? home : ".") / ".config" / "KeilFormat" / "config.json";
 #endif
@@ -658,10 +662,18 @@ static std::string run_capture(const fs::path& cwd, const std::string& command) 
 #endif
     std::array<char, 4096> buffer{};
     std::string result;
+#ifdef _WIN32
     FILE* pipe = _popen(cmd.c_str(), "r");
+#else
+    FILE* pipe = popen(cmd.c_str(), "r");
+#endif
     if (!pipe) return result;
     while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) result += buffer.data();
+#ifdef _WIN32
     _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
     return result;
 }
 
@@ -820,19 +832,202 @@ static fs::path find_project(fs::path input, fs::path& root) {
     throw std::runtime_error("cannot find .uvprojx, .ewp, Makefile, or makefile");
 }
 
+static std::vector<std::string> parse_keil_targets(const fs::path& project) {
+    std::vector<std::string> targets;
+    for (auto& value : tags(read_file(project), "TargetName")) {
+        value = trim(value);
+        if (!value.empty()) targets.push_back(value);
+    }
+    return unique(targets);
+}
+
+static std::string find_uv4_executable(const Config& config, const std::string& override_path) {
+    std::vector<fs::path> candidates;
+    if (!override_path.empty()) candidates.push_back(override_path);
+    if (!config.keil_install_path.empty()) {
+        fs::path root(config.keil_install_path);
+        candidates.push_back(root / "UV4" / "UV4.exe");
+        if (lower_copy(root.filename().string()) == "arm") candidates.push_back(root.parent_path() / "UV4" / "UV4.exe");
+    }
+#ifdef _WIN32
+    candidates.push_back("C:\\Keil_v5\\UV4\\UV4.exe");
+    candidates.push_back("C:\\Keil\\UV4\\UV4.exe");
+    const char* path_env = std::getenv("PATH");
+    if (path_env) {
+        for (auto& dir : split(path_env, ';')) candidates.push_back(fs::path(dir) / "UV4.exe");
+    }
+#endif
+    std::set<std::string> seen;
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        std::string key = lower_copy(candidate.string());
+        if (!seen.insert(key).second) continue;
+        if (fs::is_regular_file(candidate, ec)) return fs::weakly_canonical(candidate, ec).string();
+    }
+    return "";
+}
+
+static std::vector<std::string> build_keil_uv4_command(
+    const std::string& uv4,
+    const fs::path& project,
+    const fs::path& output,
+    const std::string& action,
+    const std::string& target,
+    int jobs,
+    bool has_jobs,
+    bool show_window) {
+    std::string flag;
+    if (action == "build") flag = "-b";
+    else if (action == "rebuild") flag = "-r";
+    else if (action == "clean") flag = "-c";
+    else if (action == "flash" || action == "download") flag = "-f";
+    else if (action == "debug") flag = "-d";
+    else throw std::runtime_error("unsupported Keil action: " + action);
+
+    std::vector<std::string> command{uv4};
+    if (action != "debug" && !show_window) {
+        if (!has_jobs) jobs = (action == "build") ? 16 : 0;
+        command.push_back("-j" + std::to_string(jobs));
+    }
+    command.push_back(flag);
+    command.push_back(project.string());
+    command.push_back("-o");
+    command.push_back(output.string());
+    if (!target.empty()) {
+        command.push_back("-t");
+        command.push_back(target);
+    }
+    return command;
+}
+
+static std::string command_line(const std::vector<std::string>& args) {
+    std::string line;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (i) line += " ";
+        line += quote_arg(args[i]);
+    }
+    return line;
+}
+
+static int run_keil_uv4(
+    const fs::path& input,
+    const Config& config,
+    const std::string& action,
+    const std::string& target,
+    int jobs,
+    bool has_jobs,
+    bool show_window,
+    const std::string& uv4_override,
+    const std::string& log_override,
+    bool list_targets) {
+#ifndef _WIN32
+    (void)input; (void)config; (void)action; (void)target; (void)jobs; (void)has_jobs;
+    (void)show_window; (void)uv4_override; (void)log_override; (void)list_targets;
+    throw std::runtime_error("Keil UV4 command execution is only supported on Windows.");
+#else
+    fs::path root;
+    fs::path project = find_project(input, root);
+    if (project.extension() != ".uvprojx") throw std::runtime_error("Keil UV4 requires a .uvprojx project: " + project.string());
+    auto targets = parse_keil_targets(project);
+    if (list_targets) {
+        std::cout << "Project: " << project.string() << "\n";
+        if (targets.empty()) {
+            std::cout << "No TargetName found.\n";
+        } else {
+            std::cout << "Targets:\n";
+            for (const auto& t : targets) std::cout << "  " << t << "\n";
+        }
+        return 0;
+    }
+    if (!target.empty() && !targets.empty() && std::find(targets.begin(), targets.end(), target) == targets.end()) {
+        std::cout << "Warning: target '" << target << "' was not found in project target list.\n";
+        std::cout << "Available targets:\n";
+        for (const auto& t : targets) std::cout << "  " << t << "\n";
+    }
+    std::string uv4 = find_uv4_executable(config, uv4_override);
+    if (uv4.empty()) throw std::runtime_error("UV4.exe was not found. Run --setup or pass --keil_uv4.");
+    fs::path output = log_override.empty() ? root / (action == "build" ? "build_log" : "Prg_Output") : fs::path(log_override);
+    fs::create_directories(output.parent_path());
+    std::ofstream(output, std::ios::trunc).close();
+    auto command = build_keil_uv4_command(uv4, project, output, action, target, jobs, has_jobs, show_window);
+    std::cout << "Running: " << command_line(command) << "\n";
+
+    SHELLEXECUTEINFOW sei{};
+    std::wstring exe(command[0].begin(), command[0].end());
+    std::string params;
+    for (size_t i = 1; i < command.size(); ++i) {
+        if (i > 1) params += " ";
+        params += quote_arg(command[i]);
+    }
+    std::wstring wparams(params.begin(), params.end());
+    std::string cwd = root.string();
+    std::wstring wcwd(cwd.begin(), cwd.end());
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpFile = exe.c_str();
+    sei.lpParameters = wparams.c_str();
+    sei.lpDirectory = wcwd.c_str();
+    sei.nShow = show_window || action == "debug" ? SW_SHOWNORMAL : SW_HIDE;
+    if (!ShellExecuteExW(&sei)) throw std::runtime_error("failed to start UV4.exe");
+    WaitForSingleObject(sei.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(sei.hProcess, &code);
+    CloseHandle(sei.hProcess);
+    if (fs::exists(output)) std::cout << read_file(output);
+    std::cout << "Keil " << action << " finished with exit code " << code << ".\n";
+    return static_cast<int>(code);
+#endif
+}
+
 int main(int argc, char** argv) {
     fs::path input = fs::current_path();
     bool absolute = false;
     bool setup = false;
     bool show_config = false;
+    bool keil_build = false;
+    bool list_targets = false;
+    bool keil_window = false;
+    bool has_keil_jobs = false;
+    int keil_jobs = 0;
+    std::string keil_action = "build";
+    std::string target;
+    std::string keil_uv4;
+    std::string keil_log;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if ((a == "-p" || a == "--path") && i + 1 < argc) input = argv[++i];
         else if (a == "-a" || a == "--absolute") absolute = true;
         else if (a == "-s" || a == "--setup") setup = true;
         else if (a == "--show-config") show_config = true;
+        else if (a == "--keil_build") keil_build = true;
+        else if (a == "--list-targets") list_targets = true;
+        else if (a == "--keil_window") keil_window = true;
+        else if (a == "--keil_action" && i + 1 < argc) keil_action = argv[++i];
+        else if ((a == "-t" || a == "--target") && i + 1 < argc) target = argv[++i];
+        else if (a == "--keil_uv4" && i + 1 < argc) keil_uv4 = argv[++i];
+        else if (a == "--keil_log" && i + 1 < argc) keil_log = argv[++i];
+        else if (a == "--keil_jobs" && i + 1 < argc) {
+            keil_jobs = std::atoi(argv[++i]);
+            has_keil_jobs = true;
+        }
         else if (a == "-h" || a == "--help") {
-            std::cout << "Usage: Keil2JsonCpp [-p path] [-a] [--setup] [--show-config]\n";
+            std::cout
+                << "Usage: Keil2JsonCpp [-p path] [-a] [--setup] [--show-config]\n"
+                << "       Keil2JsonCpp -p path --list-targets\n"
+                << "       Keil2JsonCpp -p path --keil_build [--keil_action build|rebuild|clean|flash|download|debug] [-t target]\n"
+                << "\nOptions:\n"
+                << "  -p, --path PATH       Project path or project file path\n"
+                << "  -a, --absolute        Format compile_commands.json paths as absolute\n"
+                << "  -s, --setup           Run setup wizard and save config\n"
+                << "  --show-config         Print saved config and exit\n"
+                << "  --keil_build          Run Keil UV4 command instead of generating compile_commands.json\n"
+                << "  --keil_action ACTION  build, rebuild, clean, flash, download, or debug\n"
+                << "  -t, --target TARGET   Keil target name\n"
+                << "  --list-targets        List Keil targets and exit\n"
+                << "  --keil_uv4 PATH       Override UV4.exe path\n"
+                << "  --keil_jobs N         Keil UV4 -j value when hiding Keil window; debug never uses -j\n"
+                << "  --keil_log PATH       Keil UV4 output log path\n"
+                << "  --keil_window         Show Keil window; debug always shows the window\n";
             return 0;
         }
     }
@@ -845,9 +1040,22 @@ int main(int argc, char** argv) {
         }
         if (setup || !fs::exists(config_path())) {
             setup_config();
-            if (setup && argc <= 2) return 0;
+            if (setup && argc <= 2 && !keil_build && !list_targets) return 0;
         }
         Config config = load_config();
+        if (keil_build || list_targets) {
+            return run_keil_uv4(
+                input,
+                config,
+                keil_action,
+                target,
+                keil_jobs,
+                has_keil_jobs,
+                keil_window || keil_action == "debug",
+                keil_uv4,
+                keil_log,
+                list_targets);
+        }
         fs::path root;
         fs::path project = find_project(input, root);
         std::vector<Entry> entries;

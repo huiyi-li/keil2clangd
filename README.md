@@ -125,6 +125,14 @@ Keil2JsonCpp.exe --show-config
 -a, --absolute       在 compile_commands.json 中输出绝对路径。
 -s, --setup          运行配置向导，扫描并保存 Keil/IAR/CMSIS 配置。
 --show-config        打印当前持久化配置。
+--keil_build         调用 Keil UV4 执行构建、清理、下载或调试。
+--keil_action        Keil 操作，可选 build、rebuild、clean、flash、download、debug。
+-t, --target         指定 Keil Target 名称。
+--list-targets       列出 Keil 工程中的 Target。
+--keil_uv4           手动指定 UV4.exe 路径。
+--keil_jobs          Keil UV4 -j 参数，仅在隐藏 Keil 窗口时使用；debug 不使用 -j。
+--keil_log           指定 Keil UV4 输出日志路径。
+--keil_window        显示 Keil 窗口；debug 总是显示窗口。
 -h, --help           显示帮助信息。
 ```
 
@@ -135,6 +143,8 @@ Keil2Json.exe -p .
 Keil2Json.exe --path D:\Project\Demo --absolute
 Keil2Json.exe --setup
 Keil2Json.exe --show-config
+Keil2Json.exe -p . --list-targets
+Keil2Json.exe -p . --keil_build --keil_action build -t "Target 1"
 ```
 
 C++ 版参数保持一致：
@@ -144,6 +154,8 @@ Keil2JsonCpp.exe -p .
 Keil2JsonCpp.exe --path D:\Project\Demo --absolute
 Keil2JsonCpp.exe --setup
 Keil2JsonCpp.exe --show-config
+Keil2JsonCpp.exe -p . --list-targets
+Keil2JsonCpp.exe -p . --keil_build --keil_action build -t "Target 1"
 ```
 
 ## Keil 工程生成流程
@@ -162,6 +174,62 @@ Keil2JsonCpp.exe --show-config
 - 已选择的 CMSIS include 路径。
 - ARMCC 工程补充 `ARMCC\include`。
 - ARMCLANG 工程补充 `ARMCLANG\include`。
+
+## Keil UV4 操作
+
+除生成 `compile_commands.json` 外，工具也可以直接调用 Keil 安装目录下的 `UV4.exe` 执行工程操作。该功能仅支持 Windows。
+
+列出工程 Target：
+
+```powershell
+Keil2Json.exe -p . --list-targets
+Keil2JsonCpp.exe -p . --list-targets
+```
+
+构建指定 Target：
+
+```powershell
+Keil2Json.exe -p . --keil_build --keil_action build -t "Target 1"
+Keil2JsonCpp.exe -p . --keil_build --keil_action build -t "Target 1"
+```
+
+清理、重建、下载和调试：
+
+```powershell
+Keil2Json.exe -p . --keil_build --keil_action clean
+Keil2Json.exe -p . --keil_build --keil_action rebuild
+Keil2Json.exe -p . --keil_build --keil_action flash
+Keil2Json.exe -p . --keil_build --keil_action debug
+```
+
+C++ 版参数相同：
+
+```powershell
+Keil2JsonCpp.exe -p . --keil_build --keil_action clean
+Keil2JsonCpp.exe -p . --keil_build --keil_action rebuild
+Keil2JsonCpp.exe -p . --keil_build --keil_action flash
+Keil2JsonCpp.exe -p . --keil_build --keil_action debug
+```
+
+`UV4.exe` 查找顺序：
+
+- `--keil_uv4` 指定的路径。
+- 配置文件中的 Keil 安装目录推导出的 `UV4\UV4.exe`。
+- 常见默认路径，例如 `C:\Keil_v5\UV4\UV4.exe`。
+- PATH 环境变量。
+
+窗口行为：
+
+- 默认情况下，非 debug 操作会传入 `-j`，让 Keil 不弹出窗口。
+- 使用 `--keil_window` 时不传 `-j`，Keil 窗口会显示。
+- `debug` 操作必须弹出 Keil 窗口，因此永远不传 `-j`。
+- `--keil_jobs` 只在隐藏 Keil 窗口时作为 `-j` 的数值使用，默认 build 为 `-j16`，其他操作为 `-j0`。
+
+日志输出：
+
+- build 默认写入工程目录下的 `build_log`。
+- clean、rebuild、flash、debug 默认写入工程目录下的 `Prg_Output`。
+- 可以通过 `--keil_log <path>` 指定日志路径。
 
 ## IAR 工程生成流程
 
