@@ -58,11 +58,24 @@ jobs:
           python -m PyInstaller --clean --noconfirm --onefile --console --name Keil2Json --distpath dist Keil2Json.py
         shell: powershell
 
+      - name: Build Keil2JsonCpp executable
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          bash cpp/build.sh
+        shell: bash
+
+      - name: Build Keil2JsonCpp executable (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\cpp\build.ps1
+        shell: powershell
+
       - name: Zip executable
         if: matrix.os == 'ubuntu-latest'
         run: |
           mkdir -p output
           cp dist/Keil2Json output/
+          cp dist-cpp/Keil2JsonCpp output/
           zip -r Keil2Json-ubuntu-latest.zip output/
         shell: bash
 
@@ -71,6 +84,7 @@ jobs:
         run: |
           mkdir output
           copy dist\Keil2Json.exe output\
+          copy dist-cpp\Keil2JsonCpp.exe output\
           powershell Compress-Archive -Path output\* -DestinationPath Keil2Json-windows-latest.zip
         shell: powershell
 
