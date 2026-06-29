@@ -1,58 +1,249 @@
-# 为Keil MDK开发环境生成 clangd和vscode的c插件生成对应的配置文件脚本
+# Keil2Json
 
-## 使用方式
+Keil2Json 用于从 Keil MDK、IAR EWARM 和 Makefile 工程生成 `compile_commands.json`，供 clangd、VS Code C/C++ 插件等工具进行代码跳转、补全和诊断。
 
-- 克隆本仓库到本地
+当前提供两个可执行版本：
 
-``` bash
-https://github.com/huiyi-li/keil2clangd.git
+- `Keil2Json.exe`：Python 版打包产物，功能完整。
+- `Keil2JsonCpp.exe`：C++ 版实现，体积更小、启动更快。
+
+## 支持的工程
+
+- Keil MDK：扫描 `.uvprojx`。
+- IAR EWARM：扫描 `.ewp`。
+- Makefile：扫描 `Makefile` 或 `makefile`，通过 `make clean`、`make -n`、`make` 捕获编译命令。
+
+生成结果会写入工程目录下的 `compile_commands.json`。
+
+## 快速使用
+
+在工程目录下运行：
+
+```powershell
+Keil2Json.exe
 ```
 
-- 复制Keil2Json.py脚本到工程项目目录下。
-- 使用python执行脚本(默认搜索当前终端路径的keil prj文件生成对应的配置文件)
+或使用 C++ 版：
 
-``` bash
-python Keil2Json.py
+```powershell
+Keil2JsonCpp.exe
 ```
 
-- 脚本会在目录生成对应的compile_commands.json文件，使用该文件可以帮助插件进行跳转解析。
-- 注意这里的默认生成方式是递归查找当前文件夹内部的keil prj文件。如果有多个，默认处理第一个keil文件。
-- 可以输入`-h`查看帮助信息。
+指定工程路径：
 
-## 扩展选项
+```powershell
+Keil2Json.exe -p D:\Project\Demo
+Keil2JsonCpp.exe -p D:\Project\Demo
+```
 
-- `-p` 指定搜索路径，默认是当前路径。
+生成绝对路径形式的 `compile_commands.json`：
+
+```powershell
+Keil2Json.exe -p D:\Project\Demo -a
+Keil2JsonCpp.exe -p D:\Project\Demo -a
+```
+
+## 首次配置
+
+首次使用建议先执行配置向导：
+
+```powershell
+Keil2Json.exe --setup
+```
+
+或：
+
+```powershell
+Keil2JsonCpp.exe --setup
+```
+
+短参数也可以使用：
+
+```powershell
+Keil2Json.exe -s
+Keil2JsonCpp.exe -s
+```
+
+配置向导会尝试从 Windows 注册表扫描 Keil 和 IAR 的安装路径，并引导选择 CMSIS 版本或手动输入 CMSIS include 路径。
+
+### Keil 配置内容
+
+Keil 配置会记录：
+
+- Keil 安装目录。
+- CMSIS include 路径，例如 `C:\Keil_v5\ARM\CMSIS\5.9.0\CMSIS\Core\Include`。
+- ARMCC include 路径。
+- ARMCLANG include 路径。
+
+Keil 的 CMSIS 路径优先根据 `TOOLS.INI` 中的 `RTEPATH` 推导。例如：
+
+```ini
+RTEPATH="D:\keil\Keil_v5\Arm\Packs"
+```
+
+对应 CMSIS 包路径会按 `D:\keil\Keil_v5\Arm\Packs\ARM\CMSIS` 查找。
+
+### IAR 配置内容
+
+IAR 配置会记录：
+
+- IAR 安装目录。
+- CMSIS include 路径，通常来自 `IAR安装目录\arm\CMSIS`。
+- IAR C 库 include 路径，通常为 `IAR安装目录\arm\inc\c`。
+
+如果注册表没有扫描到 Keil 或 IAR，配置向导会提示手动输入对应路径；不需要的工具链可以直接跳过。
+
+## 配置保存位置
+
+配置会长期保存，不需要每个工程重复设置。
+
+Windows：
+
+```text
+%APPDATA%\KeilFormat\config.json
+```
+
+Linux：
+
+```text
+~/.config/KeilFormat/config.json
+```
+
+查看当前配置：
+
+```powershell
+Keil2Json.exe --show-config
+Keil2JsonCpp.exe --show-config
+```
+
+重新配置时再次执行 `--setup` 即可覆盖旧配置。
+
+## 参数说明
+
+```text
+-p, --path <path>    指定工程目录，默认是当前目录。
+-a, --absolute       在 compile_commands.json 中输出绝对路径。
+-s, --setup          运行配置向导，扫描并保存 Keil/IAR/CMSIS 配置。
+--show-config        打印当前持久化配置。
+-h, --help           显示帮助信息。
+```
+
 示例：
 
-``` bash
-python Keil2Json.py -p D:\KeilProject
+```powershell
+Keil2Json.exe -p .
+Keil2Json.exe --path D:\Project\Demo --absolute
+Keil2Json.exe --setup
+Keil2Json.exe --show-config
 ```
 
-- `-a` 指定生成的compalte_commands.json文件的.c和include path为绝对路径。
-示例：
+C++ 版参数保持一致：
 
-``` bash
-python Keil2Json.py -a
+```powershell
+Keil2JsonCpp.exe -p .
+Keil2JsonCpp.exe --path D:\Project\Demo --absolute
+Keil2JsonCpp.exe --setup
+Keil2JsonCpp.exe --show-config
 ```
 
-- -p 和 -a 选项可以同时使用。
+## Keil 工程生成流程
 
-## 使用release页面使用pyinstaller打包成exe文件的脚本
+运行工具后会递归查找 `.uvprojx` 文件。
 
-- 下载release页面的Keil2Json.exe文件。
-- 将Keil2Json.exe文件防止到系统的path环境变量目录中。
-例如：
-我的电脑设置了`C:\MinGW\bin`为系统环境变量，将Kiil2Json.exe文件复制到`C:\MinGW\bin`目录下。
-- 打开cmd，输入`Keil2Json.exe`命令即可直接运行，不需要每次将exe复制到keil工程目录下。
-- 注意：keil工程目录下必须有keil uvprojx文件，否则会提示找不到文件。
-- 使用脚本生成的时候建议使用powershell，cd到工程所在目录
+生成时会读取工程中的：
 
-## 注意事项
+- 源文件列表。
+- include 路径。
+- 宏定义。
+- 当前使用的 ARMCC 或 ARMCLANG 信息。
 
-- 脚本默认使用python3.x版本。
-- 对于uint32_t等类型无法正常识别，需要在工程文件夹下创建.clangd文件，并添加以下内容：
-- 新增includ路径也可以在clangd文件中加入对应选项，例如 `-ICMSIS/Core/Include`
-``` yaml
-CompileFlags:
-  Add: [-include, stdint.h, -ICMSIS/Core/Include]
+工具会根据配置自动补充：
+
+- 已选择的 CMSIS include 路径。
+- ARMCC 工程补充 `ARMCC\include`。
+- ARMCLANG 工程补充 `ARMCLANG\include`。
+
+## IAR 工程生成流程
+
+运行工具后会递归查找 `.ewp` 文件。
+
+生成时会读取工程中的：
+
+- 源文件列表。
+- include 路径。
+- 宏定义。
+
+工具会根据配置自动补充：
+
+- IAR CMSIS include 路径。
+- IAR C 库 include 路径，例如 `arm\inc\c`。
+
+## Makefile 工程生成流程
+
+运行工具后如果检测到 `Makefile` 或 `makefile`，会按以下顺序执行：
+
+```powershell
+make clean
+make -n
+make
+```
+
+其中 `make -n` 用于捕获实际编译命令，`make` 用于执行真实构建。工具会从输出中提取 `gcc`、`g++`、`clang`、`arm-none-eabi-gcc` 等编译命令并生成 `compile_commands.json`。
+
+如果工程的 Makefile 需要特定 target，请先确认默认 target 可以完整构建。
+
+## Release exe 使用方式
+
+从 Release 页面下载对应平台的压缩包，解压后可以直接运行。
+
+推荐将 exe 放到 PATH 目录中，例如 Windows 下：
+
+```text
+C:\MinGW\bin
+```
+
+之后可以在任意工程目录直接运行：
+
+```powershell
+Keil2Json.exe -p .
+```
+
+如果命令行运行的行为和刚下载的 exe 不一致，先检查 PATH 中是否存在旧版本：
+
+```powershell
+where Keil2Json.exe
+where Keil2JsonCpp.exe
+```
+
+优先使用明确路径运行可以避免误用旧版本：
+
+```powershell
+D:\Tools\Keil2Json.exe -p .
+D:\Tools\Keil2JsonCpp.exe -p .
+```
+
+## 从源码运行
+
+Python 版：
+
+```powershell
+python Keil2Json.py -p .
+```
+
+打包 Python exe：
+
+```powershell
+python -m PyInstaller --clean --noconfirm --onefile --console --name Keil2Json --distpath dist Keil2Json.py
+```
+
+C++ 版：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\cpp\build.ps1
+```
+
+生成文件位于：
+
+```text
+dist-cpp\Keil2JsonCpp.exe
 ```
