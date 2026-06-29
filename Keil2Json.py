@@ -203,6 +203,11 @@ def ide_subdir_or_root(install_path, subdir_name):
     return root / subdir_name
 
 
+def path_dedupe_key(path):
+    value = str(path)
+    return value.lower() if IS_WINDOWS else value
+
+
 def normalize_windows_key(value):
     return str(value).strip().strip('"').strip("'").upper()
 
@@ -265,12 +270,36 @@ def parse_tools_ini(keil_path):
 
 
 def keil_pack_cmsis_base(install_path):
-    _, _, rte_path = parse_tools_ini(install_path)
-    if rte_path:
-        for candidate in keil_cmsis_base_candidates(rte_path):
-            if candidate.is_dir():
-                return candidate.resolve()
+    for base in keil_cmsis_bases(install_path):
+        return base
     return None
+
+
+def keil_cmsis_bases(install_path):
+    root = Path(normalize_install_path(install_path, "keil") or install_path)
+    _, _, rte_path = parse_tools_ini(root)
+    candidates = []
+    if rte_path:
+        candidates.extend(keil_cmsis_base_candidates(rte_path))
+    arm_root = ide_subdir_or_root(root, "ARM")
+    candidates.extend([
+        arm_root / "Packs" / "ARM" / "CMSIS",
+        arm_root / "PACK" / "ARM" / "CMSIS",
+        arm_root / "CMSIS",
+    ])
+
+    bases = []
+    seen = set()
+    for candidate in candidates:
+        if candidate.name.upper() != "CMSIS":
+            continue
+        key = path_dedupe_key(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_dir():
+            bases.append(candidate.resolve())
+    return bases
 
 
 def keil_cmsis_base_candidates(rte_path):
@@ -311,34 +340,45 @@ def keil_cmsis_base_candidates(rte_path):
 def cmsis_base(install_path, tool):
     root = Path(normalize_install_path(install_path, tool) or install_path)
     if tool == "keil":
-        pack_base = keil_pack_cmsis_base(root)
-        if pack_base:
-            return pack_base
+        bases = keil_cmsis_bases(root)
+        if bases:
+            return bases[0]
         return ide_subdir_or_root(root, "ARM") / "CMSIS"
     return ide_subdir_or_root(root, "arm") / "CMSIS"
 
 
 def find_cmsis_versions(install_path, tool):
-    base = cmsis_base(install_path, tool)
-    if not base.is_dir():
-        return {}
+    if tool == "keil":
+        bases = keil_cmsis_bases(install_path)
+    else:
+        base = cmsis_base(install_path, tool)
+        bases = [base] if base.is_dir() else []
 
     versions = {}
-    direct = base / "Core" / "Include"
-    if direct.is_dir():
-        versions["default"] = str(direct.resolve())
-
-    for child in sorted(base.iterdir()):
-        if not child.is_dir():
-            continue
-        candidates = [
-            child / "CMSIS" / "Core" / "Include",
-            child / "Core" / "Include",
+    for base in bases:
+        direct_candidates = [
+            ("default", base / "Core" / "Include"),
+            ("legacy", base / "Include"),
         ]
-        for candidate in candidates:
-            if candidate.is_dir():
-                versions[child.name] = str(candidate.resolve())
-                break
+        for label, direct in direct_candidates:
+            if direct.is_dir():
+                key = label if len(bases) == 1 else f"{base.parent.name}/{base.name}/{label}"
+                versions[key] = str(direct.resolve())
+
+        for child in sorted(base.iterdir()):
+            if not child.is_dir():
+                continue
+            candidates = [
+                child / "CMSIS" / "Core" / "Include",
+                child / "Core" / "Include",
+            ]
+            for candidate in candidates:
+                if candidate.is_dir():
+                    key = child.name
+                    if key in versions and versions[key] != str(candidate.resolve()):
+                        key = f"{base.parent.name}/{child.name}"
+                    versions[key] = str(candidate.resolve())
+                    break
     return versions
 
 
@@ -444,6 +484,11 @@ def first_run_setup(config_manager):
         config["keil"]["armclang_include"] = armclang_include
         if not armcc_include and not armclang_include:
             print("TOOLS.INI was not found or no ARMCC/ARMCLANG include path was detected.")
+    else:
+        print("Keil install path was skipped. You can still configure include paths manually.")
+        config["keil"]["cmsis_path"] = prompt_path("Enter Keil CMSIS include path (Enter to skip): ")
+        config["keil"]["armcc_include"] = prompt_path("Enter Keil ARMCC include path (Enter to skip): ")
+        config["keil"]["armclang_include"] = prompt_path("Enter Keil ARMCLANG include path (Enter to skip): ")
 
     iar_paths = RegistryScanner.find_iar()
     if iar_paths:
@@ -459,6 +504,11 @@ def first_run_setup(config_manager):
         config["iar"]["c_include"] = find_iar_c_include(iar_path)
         if not config["iar"]["c_include"]:
             print("IAR C include path was not found at arm/inc/c.")
+            config["iar"]["c_include"] = prompt_path("Enter IAR C include path (Enter to skip): ")
+    else:
+        print("IAR install path was skipped. You can still configure include paths manually.")
+        config["iar"]["cmsis_path"] = prompt_path("Enter IAR CMSIS include path (Enter to skip): ")
+        config["iar"]["c_include"] = prompt_path("Enter IAR C include path (Enter to skip): ")
 
     config_manager.save()
     print(f"Configuration saved: {config_manager.path}")

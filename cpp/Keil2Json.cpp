@@ -195,6 +195,16 @@ static std::string path_if_dir(const fs::path& p) {
     return fs::is_directory(p, ec) ? fs::weakly_canonical(p, ec).string() : "";
 }
 
+static std::string prompt_dir(const std::string& message) {
+    std::cout << message;
+    std::string manual;
+    if (!std::getline(std::cin, manual)) return "";
+    manual = trim(manual);
+    if (!manual.empty() && manual.front() == '"') manual.erase(manual.begin());
+    if (!manual.empty() && manual.back() == '"') manual.pop_back();
+    return path_if_dir(manual);
+}
+
 static std::vector<fs::path> keil_cmsis_base_candidates(const fs::path& rte) {
     std::string leaf = lower_copy(rte.filename().string());
     if (leaf == "cmsis") return {rte};
@@ -250,31 +260,72 @@ static ToolsIni parse_tools_ini(const fs::path& keil_root) {
     return out;
 }
 
-static fs::path cmsis_base_from_keil(const fs::path& keil_root) {
+static std::vector<fs::path> keil_cmsis_bases(const fs::path& keil_root) {
+    std::vector<fs::path> candidates;
     ToolsIni ini = parse_tools_ini(keil_root);
     if (!ini.rte_path.empty()) {
-        for (const auto& c : keil_cmsis_base_candidates(ini.rte_path)) {
-            if (fs::is_directory(c)) return fs::weakly_canonical(c);
-        }
+        auto rte_candidates = keil_cmsis_base_candidates(ini.rte_path);
+        candidates.insert(candidates.end(), rte_candidates.begin(), rte_candidates.end());
     }
+    fs::path arm = lower_copy(keil_root.filename().string()) == "arm" ? keil_root : keil_root / "ARM";
+    candidates.push_back(arm / "Packs" / "ARM" / "CMSIS");
+    candidates.push_back(arm / "PACK" / "ARM" / "CMSIS");
+    candidates.push_back(arm / "CMSIS");
+
+    std::vector<fs::path> out;
+    std::set<std::string> seen;
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        std::string key = lower_copy(c.string());
+        if (!seen.insert(key).second) continue;
+        if (fs::is_directory(c, ec)) out.push_back(fs::weakly_canonical(c, ec));
+    }
+    return out;
+}
+
+static fs::path cmsis_base_from_keil(const fs::path& keil_root) {
+    auto bases = keil_cmsis_bases(keil_root);
+    if (!bases.empty()) return bases.front();
     return keil_root / "ARM" / "CMSIS";
 }
 
-static std::vector<std::pair<std::string, std::string>> cmsis_versions(const fs::path& base) {
-    std::vector<std::pair<std::string, std::string>> out;
-    if (!fs::is_directory(base)) return out;
+static void append_cmsis_versions(std::vector<std::pair<std::string, std::string>>& out, const fs::path& base, bool multi_base) {
+    std::error_code ec;
+    if (!fs::is_directory(base, ec)) return;
     auto direct = base / "Core" / "Include";
-    if (fs::is_directory(direct)) out.push_back({"default", fs::weakly_canonical(direct).string()});
+    if (fs::is_directory(direct, ec)) {
+        std::string label = multi_base ? base.parent_path().filename().string() + "/" + base.filename().string() + "/default" : "default";
+        out.push_back({label, fs::weakly_canonical(direct, ec).string()});
+    }
+    auto legacy = base / "Include";
+    if (fs::is_directory(legacy, ec)) {
+        std::string label = multi_base ? base.parent_path().filename().string() + "/" + base.filename().string() + "/legacy" : "legacy";
+        out.push_back({label, fs::weakly_canonical(legacy, ec).string()});
+    }
     for (auto& e : fs::directory_iterator(base)) {
         if (!e.is_directory()) continue;
         std::vector<fs::path> candidates = {e.path() / "CMSIS" / "Core" / "Include", e.path() / "Core" / "Include"};
         for (auto& c : candidates) {
-            if (fs::is_directory(c)) {
-                out.push_back({e.path().filename().string(), fs::weakly_canonical(c).string()});
+            if (fs::is_directory(c, ec)) {
+                out.push_back({e.path().filename().string(), fs::weakly_canonical(c, ec).string()});
                 break;
             }
         }
     }
+}
+
+static std::vector<std::pair<std::string, std::string>> cmsis_versions(const fs::path& base) {
+    std::vector<std::pair<std::string, std::string>> out;
+    append_cmsis_versions(out, base, false);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+static std::vector<std::pair<std::string, std::string>> cmsis_versions_for_keil(const fs::path& keil_root) {
+    std::vector<std::pair<std::string, std::string>> out;
+    auto bases = keil_cmsis_bases(keil_root);
+    bool multi_base = bases.size() > 1;
+    for (const auto& base : bases) append_cmsis_versions(out, base, multi_base);
     std::sort(out.begin(), out.end());
     return out;
 }
@@ -452,6 +503,22 @@ static std::string choose_cmsis_include(const fs::path& base) {
     return versions[n - 1].second;
 }
 
+static std::string choose_cmsis_include_from_versions(const std::vector<std::pair<std::string, std::string>>& versions, const std::string& fallback_base) {
+    if (versions.empty()) {
+        std::cout << "\nNo CMSIS versions found under: " << fallback_base << "\n";
+        return prompt_dir("Manual CMSIS include path (Enter to skip): ");
+    }
+    std::cout << "\nSelect CMSIS version:\n";
+    for (size_t i = 0; i < versions.size(); ++i) std::cout << "  [" << (i + 1) << "] " << versions[i].first << ": " << versions[i].second << "\n";
+    std::cout << "  [0] Manual / skip\nSelect: ";
+    std::string raw;
+    if (!std::getline(std::cin, raw)) return "";
+    int n = raw.empty() ? 0 : std::atoi(raw.c_str());
+    if (n <= 0) return prompt_dir("Manual CMSIS include path (Enter to skip): ");
+    if (static_cast<size_t>(n) > versions.size()) return "";
+    return versions[n - 1].second;
+}
+
 static void setup_config() {
     Config c;
     std::cout << "Keil2JsonCpp setup\nConfig file: " << config_path().string() << "\n";
@@ -460,16 +527,28 @@ static void setup_config() {
         ToolsIni ini = parse_tools_ini(c.keil_install_path);
         c.keil_armcc_include = ini.armcc_include;
         c.keil_armclang_include = ini.armclang_include;
-        c.keil_cmsis_path = choose_cmsis_include(cmsis_base_from_keil(c.keil_install_path));
+        c.keil_cmsis_path = choose_cmsis_include_from_versions(
+            cmsis_versions_for_keil(c.keil_install_path),
+            cmsis_base_from_keil(c.keil_install_path).string());
+    } else {
+        std::cout << "Keil install path was skipped. You can still configure include paths manually.\n";
+        c.keil_cmsis_path = prompt_dir("Enter Keil CMSIS include path (Enter to skip): ");
+        c.keil_armcc_include = prompt_dir("Enter Keil ARMCC include path (Enter to skip): ");
+        c.keil_armclang_include = prompt_dir("Enter Keil ARMCLANG include path (Enter to skip): ");
     }
     c.iar_install_path = choose_path("Detected IAR installations:", scan_iar());
     if (!c.iar_install_path.empty()) {
         fs::path root(c.iar_install_path);
         c.iar_cmsis_path = choose_cmsis_include(root / "arm" / "CMSIS");
         c.iar_c_include = path_if_dir(root / "arm" / "inc" / "c");
+        if (c.iar_c_include.empty()) c.iar_c_include = prompt_dir("Enter IAR C include path (Enter to skip): ");
+    } else {
+        std::cout << "IAR install path was skipped. You can still configure include paths manually.\n";
+        c.iar_cmsis_path = prompt_dir("Enter IAR CMSIS include path (Enter to skip): ");
+        c.iar_c_include = prompt_dir("Enter IAR C include path (Enter to skip): ");
     }
     save_config(c);
-    std::cout << "Configuration saved.\n";
+    std::cout << "Configuration saved: " << config_path().string() << "\n";
 }
 
 static std::vector<std::string> tags(const std::string& xml, const std::string& name) {
@@ -479,6 +558,20 @@ static std::vector<std::string> tags(const std::string& xml, const std::string& 
         out.push_back(trim((*it)[1].str()));
     }
     return out;
+}
+
+static std::string first_tag_text(const std::string& xml, const std::string& name) {
+    for (auto& value : tags(xml, name)) {
+        value = trim(value);
+        if (!value.empty()) return value;
+    }
+    return "";
+}
+
+static std::string keil_various_controls(const std::string& xml) {
+    std::regex re(R"(<TargetArmAds>[\s\S]*?<Cads>[\s\S]*?<VariousControls>\s*([\s\S]*?)\s*</VariousControls>)", std::regex::icase);
+    std::smatch m;
+    return std::regex_search(xml, m, re) ? m[1].str() : "";
 }
 
 static fs::path resolve_path(const fs::path& root, std::string value) {
@@ -509,13 +602,14 @@ static std::string detect_keil_compiler(const fs::path& file) {
 static ProjectData parse_uvprojx(const fs::path& file, const fs::path& root, const Config& config) {
     std::string xml = read_file(file);
     ProjectData data;
-    auto include_tags = tags(xml, "IncludePath");
-    if (!include_tags.empty()) {
-        for (auto& item : split(include_tags.front(), ';')) data.includes.push_back(slash(resolve_path(root, item)));
+    std::string controls = keil_various_controls(xml);
+    std::string include_text = first_tag_text(controls.empty() ? xml : controls, "IncludePath");
+    if (!include_text.empty()) {
+        for (auto& item : split(include_text, ';')) data.includes.push_back(slash(resolve_path(root, item)));
     }
-    auto define_tags = tags(xml, "Define");
-    if (!define_tags.empty()) {
-        for (auto& item : split(define_tags.front(), ',')) data.defines.push_back(item);
+    std::string define_text = first_tag_text(controls.empty() ? xml : controls, "Define");
+    if (!define_text.empty()) {
+        for (auto& item : split(define_text, ',')) data.defines.push_back(item);
     }
     for (auto& f : tags(xml, "FilePath")) data.sources.push_back(slash(resolve_path(root, f)));
     if (!config.keil_cmsis_path.empty()) data.includes.push_back(config.keil_cmsis_path);
