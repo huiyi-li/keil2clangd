@@ -1077,6 +1077,24 @@ static std::string command_line(const std::vector<std::string>& args) {
     return line;
 }
 
+static std::uintmax_t print_new_log_content(const fs::path& log_file, std::uintmax_t position) {
+    std::error_code ec;
+    if (!fs::exists(log_file, ec)) return position;
+    std::uintmax_t size = fs::file_size(log_file, ec);
+    if (ec || size <= position) return position;
+
+    std::ifstream in(log_file, std::ios::binary);
+    if (!in) return position;
+    in.seekg(static_cast<std::streamoff>(position), std::ios::beg);
+    std::string data(static_cast<size_t>(size - position), '\0');
+    in.read(data.data(), static_cast<std::streamsize>(data.size()));
+    data.resize(static_cast<size_t>(in.gcount()));
+    if (!data.empty()) {
+        std::cout << replace_all(data, "\\", "/") << std::flush;
+    }
+    return position + data.size();
+}
+
 static int run_keil_uv4(
     const fs::path& input,
     const Config& config,
@@ -1139,11 +1157,16 @@ static int run_keil_uv4(
     sei.lpDirectory = wcwd.c_str();
     sei.nShow = show_window || action == "debug" ? SW_SHOWNORMAL : SW_HIDE;
     if (!ShellExecuteExW(&sei)) throw std::runtime_error("failed to start UV4.exe");
-    WaitForSingleObject(sei.hProcess, INFINITE);
+
+    std::uintmax_t log_position = 0;
+    while (WaitForSingleObject(sei.hProcess, 100) == WAIT_TIMEOUT) {
+        log_position = print_new_log_content(output, log_position);
+    }
+    log_position = print_new_log_content(output, log_position);
+
     DWORD code = 0;
     GetExitCodeProcess(sei.hProcess, &code);
     CloseHandle(sei.hProcess);
-    if (fs::exists(output)) std::cout << read_file(output);
     std::cout << "Keil " << action << " finished with exit code " << code << ".\n";
     return static_cast<int>(code);
 #endif
