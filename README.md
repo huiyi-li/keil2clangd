@@ -125,6 +125,8 @@ Keil2JsonCpp.exe --show-config
 -a, --absolute       在 compile_commands.json 中输出绝对路径。
 -s, --setup          运行配置向导，扫描并保存 Keil/IAR/CMSIS 配置。
 --show-config        打印当前持久化配置。
+--project-type       指定工程分支，可选 keil、iar、makefile、make。
+-n, --dry-run        Makefile 工程只执行 make clean 和 make -n，不执行最终 make。
 --keil_build         调用 Keil UV4 执行构建、清理、下载或调试。
 --keil_action        Keil 操作，可选 build、rebuild、clean、flash、download、debug。
 -t, --target         指定 Keil Target 名称。
@@ -144,6 +146,9 @@ Keil2Json.exe --path D:\Project\Demo --absolute
 Keil2Json.exe --setup
 Keil2Json.exe --show-config
 Keil2Json.exe -p . --list-targets
+Keil2Json.exe -p . --project-type keil
+Keil2Json.exe -p . --project-type iar
+Keil2Json.exe -p . --project-type makefile
 Keil2Json.exe -p . --keil_build --keil_action build -t "Target 1"
 ```
 
@@ -155,12 +160,40 @@ Keil2JsonCpp.exe --path D:\Project\Demo --absolute
 Keil2JsonCpp.exe --setup
 Keil2JsonCpp.exe --show-config
 Keil2JsonCpp.exe -p . --list-targets
+Keil2JsonCpp.exe -p . --project-type keil
+Keil2JsonCpp.exe -p . --project-type iar
+Keil2JsonCpp.exe -p . --project-type makefile
 Keil2JsonCpp.exe -p . --keil_build --keil_action build -t "Target 1"
 ```
+
+## 多工程文件目录
+
+如果同一个目录下同时存在 `.uvprojx`、`.ewp`、`Makefile` 或 `makefile`，工具会先列出检测到的工程类型，让用户选择走 Keil、IAR 还是 Makefile 分支。
+
+也可以通过 `--project-type` 跳过交互：
+
+```powershell
+Keil2Json.exe -p . --project-type keil
+Keil2Json.exe -p . --project-type iar
+Keil2Json.exe -p . --project-type makefile
+```
+
+分支行为：
+
+- Keil 和 IAR 分支直接解析工程文件并生成 `compile_commands.json`。
+- Makefile 分支会执行 `make clean`、`make -n`，再执行 `make`，然后根据捕获到的编译命令生成 `compile_commands.json`。
+- Makefile 分支按目录执行默认 `make` 目标；即使目录中同时存在 `Makefile` 和 `makefile`，也不会展示 Makefile 文件选择。
+- 如果目录下存在多个同类型工程文件，工具会继续列出文件让用户选择。
 
 ## Keil 工程生成流程
 
 运行工具后会递归查找 `.uvprojx` 文件。
+
+如果 Keil 工程只有一个 Target，会直接使用该 Target 生成 `compile_commands.json`。如果包含多个 Target，工具会列出 Target 让用户选择；也可以使用 `--target` 指定：
+
+```powershell
+Keil2Json.exe -p . --project-type keil --target "Target 1"
+```
 
 生成时会读取工程中的：
 

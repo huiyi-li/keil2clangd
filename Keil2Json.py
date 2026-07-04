@@ -9,6 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -228,43 +229,55 @@ def parse_tools_ini(keil_path):
     if not tools_ini.exists():
         return "", "", ""
 
-    parser = configparser.ConfigParser()
-    try:
-        parser.read(tools_ini, encoding="utf-8")
-    except configparser.Error:
-        parser.read(tools_ini, encoding="mbcs")
+    content = ""
+    for enc in ("utf-8", "gbk", "mbcs", "latin1"):
+        try:
+            content = tools_ini.read_text(encoding=enc, errors="ignore")
+            if "[UV2]" in content or "[ARM]" in content:
+                break
+        except Exception:
+            continue
 
     armcc_include = ""
     armclang_include = ""
     rte_path = ""
-    for section in parser.sections():
-        if parser.has_option(section, "RTEPATH") and not rte_path:
-            rte = resolve_tools_ini_path(root, parser.get(section, "RTEPATH"))
-            if rte and rte.is_dir():
-                rte_path = str(rte.resolve())
+    current_section = ""
 
-        if not parser.has_option(section, "PATH"):
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith((";", "#")):
             continue
-        base = resolve_tools_ini_path(root, parser.get(section, "PATH"))
-        if not base:
-            continue
-        name = section.upper()
 
-        if name == "ARMCC":
-            include = base / "include"
-            if include.is_dir():
-                armcc_include = str(include.resolve())
-        elif name == "ARMCLANG":
-            include = base / "include"
-            if include.is_dir():
-                armclang_include = str(include.resolve())
-        elif name == "ARM":
-            include = base / "ARMCC" / "include"
-            if include.is_dir() and not armcc_include:
-                armcc_include = str(include.resolve())
-            include = base / "ARMCLANG" / "include"
-            if include.is_dir() and not armclang_include:
-                armclang_include = str(include.resolve())
+        if line.startswith("[") and line.endswith("]"):
+            current_section = line[1:-1].strip().upper()
+            continue
+
+        if "=" in line:
+            key, val = line.split("=", 1)
+            key = key.strip().upper()
+            
+            val = val.split("#")[0].strip().strip('"').strip("'")
+
+            # 抓取 RTEPATH
+            if key == "RTEPATH" and not rte_path:
+                rte = resolve_tools_ini_path(root, val)
+                if rte and rte.is_dir():
+                    rte_path = str(rte.resolve())
+
+            if key == "PATH" and val:
+                base = resolve_tools_ini_path(root, val)
+                if base:
+                    if current_section == "ARMCC":
+                        inc = base / "include"
+                        if inc.is_dir(): armcc_include = str(inc.resolve())
+                    elif current_section == "ARMCLANG":
+                        inc = base / "include"
+                        if inc.is_dir(): armclang_include = str(inc.resolve())
+                    elif current_section == "ARM":
+                        inc = base / "ARMCC" / "include"
+                        if inc.is_dir() and not armcc_include: armcc_include = str(inc.resolve())
+                        inc = base / "ARMCLANG" / "include"
+                        if inc.is_dir() and not armclang_include: armclang_include = str(inc.resolve())
 
     return armcc_include, armclang_include, rte_path
 
@@ -433,6 +446,37 @@ def parse_keil_targets(project_file):
     return targets
 
 
+def normalize_keil_target_name(value):
+    return str(value or "").strip().casefold()
+
+
+def find_keil_target(root, target_name=None):
+    targets = []
+    for target in root.findall(".//Target"):
+        name_elem = target.find("TargetName")
+        if name_elem is None or not name_elem.text or not name_elem.text.strip():
+            continue
+        targets.append((name_elem.text.strip(), target))
+
+    if not targets:
+        return None, ""
+    if target_name:
+        requested = normalize_keil_target_name(target_name)
+        for name, target in targets:
+            if normalize_keil_target_name(name) == requested:
+                return target, name
+        available = ", ".join(name for name, _ in targets)
+        raise ValueError(f"Keil target not found: {target_name}. Available targets: {available}")
+    if len(targets) == 1:
+        return targets[0][1], targets[0][0]
+
+    index = choose_from_list("Select Keil target for compile_commands.json:", [name for name, _ in targets])
+    if index <= 0:
+        print(f"No target selected, defaulting to: {targets[0][0]}")
+        return targets[0][1], targets[0][0]
+    return targets[index - 1][1], targets[index - 1][0]
+
+
 def build_keil_uv4_command(uv4, project_file, output, action, target=None, jobs=None, show_window=False):
     action_map = {
         "build": "-b",
@@ -462,12 +506,35 @@ def build_keil_uv4_command(uv4, project_file, output, action, target=None, jobs=
     return command
 
 
+def print_new_log_content(log_file, position):
+    if not log_file.exists():
+        return position
+    with log_file.open("rb") as f:
+        f.seek(position)
+        data = f.read()
+        position = f.tell()
+    if data:
+        text = data.decode("utf-8", errors="replace")
+        if "\ufffd" in text:
+            text = data.decode("mbcs" if IS_WINDOWS else "utf-8", errors="replace")
+        text = text.replace("\\", "/")
+        encoding = sys.stdout.encoding or "utf-8"
+        text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(text, end="", flush=True)
+    return position
+
+
 def run_keil_uv4(project_path, action, target=None, jobs=None, show_window=False,
                 uv4_path=None, log_path=None, config_manager=None, list_targets=False):
     if not IS_WINDOWS:
         raise RuntimeError("Keil UV4 command execution is only supported on Windows.")
 
-    detector = CompileCommandsGenerator(path=project_path, config_manager=config_manager)
+    detector = CompileCommandsGenerator(
+        path=project_path,
+        config_manager=config_manager,
+        target=target,
+        project_type="keil",
+    )
     project_file = detector.detect_project()
     if project_file.suffix.lower() != ".uvprojx":
         raise RuntimeError(f"Keil UV4 requires a .uvprojx project, got: {project_file}")
@@ -483,7 +550,7 @@ def run_keil_uv4(project_path, action, target=None, jobs=None, show_window=False
             print("No TargetName found.")
         return 0
 
-    if target and targets and target not in targets:
+    if target and targets and not any(normalize_keil_target_name(target) == normalize_keil_target_name(item) for item in targets):
         print(f"Warning: target '{target}' was not found in project target list.")
         print("Available targets:")
         for item in targets:
@@ -509,29 +576,31 @@ def run_keil_uv4(project_path, action, target=None, jobs=None, show_window=False
     if IS_WINDOWS and not show_window and action != "debug":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-    result = subprocess.run(
+    process = subprocess.Popen(
         command,
         cwd=str(detector.project_root),
         creationflags=creationflags,
-        check=False,
     )
 
-    if output.exists():
+    log_position = 0
+    while process.poll() is None:
         try:
-            print(output.read_text(encoding="utf-8", errors="replace"))
+            log_position = print_new_log_content(output, log_position)
         except OSError:
             pass
+        time.sleep(0.1)
+    try:
+        log_position = print_new_log_content(output, log_position)
+    except OSError:
+        pass
 
-    print(f"Keil {action} finished with exit code {result.returncode}.")
+    print(f"Keil {action} finished with exit code {process.returncode}.")
     if action == "debug" and not show_window:
         print("Debug action always starts the Keil window.")
-    return result.returncode
+    return process.returncode
 
 
-def detect_keil_compiler_type(project_file):
-    tree = ET.parse(project_file)
-    root = tree.getroot()
-
+def detect_keil_compiler_type_from_root(root):
     uac6 = root.find(".//uAC6")
     if uac6 is not None and uac6.text:
         try:
@@ -549,6 +618,11 @@ def detect_keil_compiler_type(project_file):
             return "armcc"
 
     return "armcc"
+
+
+def detect_keil_compiler_type(project_file):
+    tree = ET.parse(project_file)
+    return detect_keil_compiler_type_from_root(tree.getroot())
 
 
 def prompt_path(message):
@@ -655,11 +729,13 @@ def first_run_setup(config_manager):
 
 
 class CompileCommandsGenerator:
-    def __init__(self, path=None, absolute=False, config_manager=None, dry_run=False):
+    def __init__(self, path=None, absolute=False, config_manager=None, dry_run=False, target=None, project_type=None):
         self.path = Path(path).expanduser() if path and str(path).strip() else Path.cwd()
         self.absolute = absolute
         self.config_manager = config_manager or ConfigManager()
         self.dry_run = dry_run
+        self.target = target
+        self.project_type = project_type
         self.project_root = None
         self.compiler = "arm-none-eabi-gcc"
         self.extra_args = ["-D__GNUC__"]
@@ -698,10 +774,14 @@ class CompileCommandsGenerator:
     def parse_uvprojx(self, file_path):
         tree = ET.parse(file_path)
         root = tree.getroot()
+        target_root, target_name = find_keil_target(root, self.target)
+        parse_root = target_root if target_root is not None else root
+        if target_name:
+            print(f"Using Keil target: {target_name}")
         include_paths = []
         defines = []
 
-        controls = root.find(".//TargetArmAds/Cads/VariousControls")
+        controls = parse_root.find(".//TargetArmAds/Cads/VariousControls")
         if controls is not None:
             include_elem = controls.find("IncludePath")
             if include_elem is not None and include_elem.text:
@@ -716,7 +796,7 @@ class CompileCommandsGenerator:
             if resolved:
                 abs_includes.append(resolved)
 
-        compiler_type = detect_keil_compiler_type(file_path)
+        compiler_type = detect_keil_compiler_type_from_root(parse_root)
         cmsis = self.config_manager.get("keil", "cmsis_path")
         if cmsis:
             abs_includes.append(cmsis)
@@ -728,7 +808,7 @@ class CompileCommandsGenerator:
             abs_includes.append(toolchain_include)
 
         source_files = []
-        for group in root.findall(".//Group"):
+        for group in parse_root.findall(".//Group"):
             for file_elem in group.findall(".//File"):
                 path_elem = file_elem.find("FilePath")
                 if path_elem is None or not path_elem.text:
@@ -937,23 +1017,87 @@ class CompileCommandsGenerator:
             json.dump(entries, f, indent=4, ensure_ascii=False)
         return output
 
-    def detect_project(self):
+    def collect_projects(self):
         root = self.path.resolve()
         if root.is_file():
-            self.project_root = root.parent.resolve()
-            return root
+            suffix = root.suffix.lower()
+            name = root.name.lower()
+            if suffix == ".uvprojx":
+                return {"keil": [root], "iar": [], "makefile": []}
+            if suffix == ".ewp":
+                return {"keil": [], "iar": [root], "makefile": []}
+            if name == "makefile":
+                return {"keil": [], "iar": [], "makefile": [root.parent.resolve()]}
+            return {"keil": [], "iar": [], "makefile": []}
 
-        self.project_root = root
-        for pattern in ("**/*.uvprojx", "**/*.ewp"):
-            files = list(root.glob(pattern))
-            if files:
-                self.project_root = files[0].parent.resolve()
-                return files[0]
-        for name in ("Makefile", "makefile"):
-            makefile = root / name
-            if makefile.exists():
-                return makefile
-        raise FileNotFoundError("cannot find .uvprojx, .ewp, Makefile, or makefile")
+        projects = {"keil": [], "iar": [], "makefile": []}
+        projects["keil"] = sorted(root.glob("**/*.uvprojx"))
+        projects["iar"] = sorted(root.glob("**/*.ewp"))
+        if (root / "Makefile").exists() or (root / "makefile").exists():
+            projects["makefile"].append(root)
+        return projects
+
+    def choose_project_file(self, project_type, files):
+        if project_type == "makefile":
+            return files[0]
+        if project_type == "keil" and self.target:
+            matched = []
+            requested = normalize_keil_target_name(self.target)
+            for path in files:
+                try:
+                    targets = parse_keil_targets(path)
+                    if any(normalize_keil_target_name(item) == requested for item in targets):
+                        matched.append(path)
+                except ET.ParseError:
+                    continue
+            if len(matched) == 1:
+                return matched[0]
+            if len(matched) > 1:
+                files = matched
+        if len(files) == 1:
+            return files[0]
+        labels = [str(path) for path in files]
+        index = choose_from_list(f"Select {project_type} project file:", labels)
+        if index <= 0:
+            print(f"No project file selected, defaulting to: {files[0]}")
+            return files[0]
+        return files[index - 1]
+
+    def detect_project(self):
+        projects = self.collect_projects()
+        available = [(kind, files) for kind, files in projects.items() if files]
+        if not available:
+            raise FileNotFoundError("cannot find .uvprojx, .ewp, Makefile, or makefile")
+
+        if self.project_type:
+            kind = self.project_type.lower()
+            if kind == "make":
+                kind = "makefile"
+            if kind not in projects:
+                raise ValueError(f"unsupported project type: {self.project_type}")
+            if not projects[kind]:
+                raise FileNotFoundError(f"cannot find project type: {self.project_type}")
+        elif len(available) == 1:
+            kind = available[0][0]
+        else:
+            labels = []
+            for item_kind, files in available:
+                labels.append(f"{item_kind}: {files[0]}" + (f" ({len(files)} files)" if len(files) > 1 else ""))
+            index = choose_from_list("Multiple project types found, select generator branch:", labels)
+            if index <= 0:
+                print(f"No project type selected, defaulting to: {available[0][0]}")
+                kind = available[0][0]
+            else:
+                kind = available[index - 1][0]
+
+        if kind == "makefile":
+            project = projects[kind][0]
+            self.project_root = project.resolve()
+            return project / "Makefile"
+
+        project = self.choose_project_file(kind, projects[kind])
+        self.project_root = project.parent.resolve() if project.is_file() else self.path.resolve()
+        return project
 
     def generate(self):
         project_file = self.detect_project()
@@ -961,8 +1105,7 @@ class CompileCommandsGenerator:
         name = project_file.name.lower()
 
         if suffix == ".uvprojx":
-            compiler_type = detect_keil_compiler_type(project_file)
-            print(f"Detected Keil project, compiler: {compiler_type}")
+            print("Detected Keil project")
             includes, defines, sources = self.parse_uvprojx(project_file)
             entries = self.generate_entries(includes, defines, sources)
         elif suffix == ".ewp":
@@ -986,6 +1129,7 @@ def main():
     )
     parser.add_argument("--path", "-p", required=False, help="Project path or project file path")
     parser.add_argument("--absolute", "-a", action="store_true", help="Format paths as absolute")
+    parser.add_argument("--project-type", choices=["keil", "iar", "makefile", "make"], help="Select generator branch when multiple project types exist")
     parser.add_argument("--setup", "-s", action="store_true", help="Run setup wizard and save config")
     parser.add_argument("--show-config", action="store_true", help="Print saved config and exit")
     parser.add_argument("--dry-run", "-n", action="store_true", help="For Makefile projects use make -n after make clean")
@@ -996,7 +1140,7 @@ def main():
         default="build",
         help="Keil UV4 action used with --keil_build",
     )
-    parser.add_argument("--target", "-t", help="Keil target name used with --keil_build")
+    parser.add_argument("--target", "-t", help="Keil target name used for compile_commands.json generation or --keil_build")
     parser.add_argument("--list-targets", action="store_true", help="List Keil targets and exit")
     parser.add_argument("--keil_uv4", help="Override UV4.exe path")
     parser.add_argument("--keil_jobs", type=int, help="Keil UV4 -j value used when hiding the Keil window; debug never uses -j")
@@ -1015,28 +1159,34 @@ def main():
         if args.setup and not args.path and not args.keil_build and not args.list_targets:
             return
 
-    if args.keil_build or args.list_targets:
-        exit_code = run_keil_uv4(
-            project_path=args.path,
-            action=args.keil_action,
-            target=args.target,
-            jobs=args.keil_jobs,
-            show_window=args.keil_window or args.keil_action == "debug",
-            uv4_path=args.keil_uv4,
-            log_path=args.keil_log,
-            config_manager=manager,
-            list_targets=args.list_targets,
-        )
-        raise SystemExit(exit_code)
+    try:
+        if args.keil_build or args.list_targets:
+            return run_keil_uv4(
+                project_path=args.path,
+                action=args.keil_action,
+                target=args.target,
+                jobs=args.keil_jobs,
+                show_window=args.keil_window or args.keil_action == "debug",
+                uv4_path=args.keil_uv4,
+                log_path=args.keil_log,
+                config_manager=manager,
+                list_targets=args.list_targets,
+            )
 
-    generator = CompileCommandsGenerator(
-        path=args.path,
-        absolute=args.absolute,
-        config_manager=manager,
-        dry_run=args.dry_run,
-    )
-    generator.generate()
+        generator = CompileCommandsGenerator(
+            path=args.path,
+            absolute=args.absolute,
+            config_manager=manager,
+            dry_run=args.dry_run,
+            target=args.target,
+            project_type=args.project_type,
+        )
+        generator.generate()
+        return 0
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

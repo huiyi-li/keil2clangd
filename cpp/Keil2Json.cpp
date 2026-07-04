@@ -63,6 +63,10 @@ static std::string lower_copy(std::string s) {
     return s;
 }
 
+static std::string normalize_name(const std::string& s) {
+    return lower_copy(trim(s));
+}
+
 static std::string slash(const fs::path& p) {
     return replace_all(p.generic_string(), "\\", "/");
 }
@@ -578,6 +582,68 @@ static std::string keil_various_controls(const std::string& xml) {
     return std::regex_search(xml, m, re) ? m[1].str() : "";
 }
 
+static std::string choose_from_list(const std::string& title, const std::vector<std::string>& labels) {
+    std::cout << title << "\n";
+    for (size_t i = 0; i < labels.size(); ++i) std::cout << "  [" << (i + 1) << "] " << labels[i] << "\n";
+    std::cout << "  [0] Skip\nSelect: ";
+    std::string raw;
+    if (!std::getline(std::cin, raw)) return "";
+    int n = raw.empty() ? 0 : std::atoi(raw.c_str());
+    if (n <= 0 || static_cast<size_t>(n) > labels.size()) return "";
+    return labels[n - 1];
+}
+
+static std::vector<std::pair<std::string, std::string>> keil_target_blocks(const std::string& xml) {
+    std::vector<std::pair<std::string, std::string>> out;
+    std::regex target_re(R"(<Target>\s*([\s\S]*?)\s*</Target>)", std::regex::icase);
+    for (auto it = std::sregex_iterator(xml.begin(), xml.end(), target_re); it != std::sregex_iterator(); ++it) {
+        std::string block = (*it)[1].str();
+        std::string name = first_tag_text(block, "TargetName");
+        if (!name.empty()) out.push_back({name, block});
+    }
+    return out;
+}
+
+static std::string select_keil_target_xml(const std::string& xml, const std::string& target_name, std::string& selected_name) {
+    auto targets = keil_target_blocks(xml);
+    if (targets.empty()) return xml;
+    if (!target_name.empty()) {
+        std::string requested = normalize_name(target_name);
+        for (const auto& item : targets) {
+            if (normalize_name(item.first) == requested) {
+                selected_name = item.first;
+                return item.second;
+            }
+        }
+        std::ostringstream available;
+        for (size_t i = 0; i < targets.size(); ++i) {
+            if (i) available << ", ";
+            available << targets[i].first;
+        }
+        throw std::runtime_error("Keil target not found: " + target_name + ". Available targets: " + available.str());
+    }
+    if (targets.size() == 1) {
+        selected_name = targets[0].first;
+        return targets[0].second;
+    }
+    std::vector<std::string> labels;
+    for (const auto& item : targets) labels.push_back(item.first);
+    std::string selected = choose_from_list("Select Keil target for compile_commands.json:", labels);
+    if (selected.empty()) {
+        selected_name = targets[0].first;
+        std::cout << "No target selected, defaulting to: " << selected_name << "\n";
+        return targets[0].second;
+    }
+    for (const auto& item : targets) {
+        if (item.first == selected) {
+            selected_name = item.first;
+            return item.second;
+        }
+    }
+    selected_name = targets[0].first;
+    return targets[0].second;
+}
+
 static fs::path resolve_path(const fs::path& root, std::string value) {
     value = trim(replace_all(value, "\\", "/"));
     if (value.empty()) return {};
@@ -594,8 +660,8 @@ static std::string format_path(const fs::path& root, const fs::path& path, bool 
     return ec ? slash(p) : slash(rel);
 }
 
-static std::string detect_keil_compiler(const fs::path& file) {
-    std::string xml = lower_copy(read_file(file));
+static std::string detect_keil_compiler_from_xml(const std::string& text) {
+    std::string xml = lower_copy(text);
     std::regex uac6_re(R"(<uac6>\s*([0-9]+)\s*</uac6>)");
     std::smatch m;
     if (std::regex_search(xml, m, uac6_re) && std::atoi(m[1].str().c_str()) > 0) return "armclang";
@@ -603,21 +669,24 @@ static std::string detect_keil_compiler(const fs::path& file) {
     return "armcc";
 }
 
-static ProjectData parse_uvprojx(const fs::path& file, const fs::path& root, const Config& config) {
+static ProjectData parse_uvprojx(const fs::path& file, const fs::path& root, const Config& config, const std::string& target_name) {
     std::string xml = read_file(file);
+    std::string selected_name;
+    std::string parse_xml = select_keil_target_xml(xml, target_name, selected_name);
+    if (!selected_name.empty()) std::cout << "Using Keil target: " << selected_name << "\n";
     ProjectData data;
-    std::string controls = keil_various_controls(xml);
-    std::string include_text = first_tag_text(controls.empty() ? xml : controls, "IncludePath");
+    std::string controls = keil_various_controls(parse_xml);
+    std::string include_text = first_tag_text(controls.empty() ? parse_xml : controls, "IncludePath");
     if (!include_text.empty()) {
         for (auto& item : split(include_text, ';')) data.includes.push_back(slash(resolve_path(root, item)));
     }
-    std::string define_text = first_tag_text(controls.empty() ? xml : controls, "Define");
+    std::string define_text = first_tag_text(controls.empty() ? parse_xml : controls, "Define");
     if (!define_text.empty()) {
         for (auto& item : split(define_text, ',')) data.defines.push_back(item);
     }
-    for (auto& f : tags(xml, "FilePath")) data.sources.push_back(slash(resolve_path(root, f)));
+    for (auto& f : tags(parse_xml, "FilePath")) data.sources.push_back(slash(resolve_path(root, f)));
     if (!config.keil_cmsis_path.empty()) data.includes.push_back(config.keil_cmsis_path);
-    std::string compiler = detect_keil_compiler(file);
+    std::string compiler = detect_keil_compiler_from_xml(parse_xml);
     if (compiler == "armclang" && !config.keil_armclang_include.empty()) data.includes.push_back(config.keil_armclang_include);
     if (compiler == "armcc" && !config.keil_armcc_include.empty()) data.includes.push_back(config.keil_armcc_include);
     data.includes = unique(data.includes);
@@ -703,13 +772,15 @@ static bool ends_with_any(const std::string& s, const std::vector<std::string>& 
     return false;
 }
 
-static std::vector<Entry> parse_makefile(const fs::path& root) {
+static std::vector<Entry> parse_makefile(const fs::path& root, bool dry_run) {
     std::cout << "Running: make clean\n";
     run_capture(root, "make clean");
     std::cout << "Running: make -n\n";
     std::string output = run_capture(root, "make -n");
-    std::cout << "Running: make\n";
-    run_capture(root, "make");
+    if (!dry_run) {
+        std::cout << "Running: make\n";
+        run_capture(root, "make");
+    }
 
     std::vector<Entry> entries;
     std::stringstream ss(output);
@@ -812,26 +883,6 @@ static std::vector<Entry> from_project_data(const fs::path& root, const ProjectD
     return entries;
 }
 
-static fs::path find_project(fs::path input, fs::path& root) {
-    input = fs::weakly_canonical(input);
-    if (fs::is_regular_file(input)) {
-        root = input.parent_path();
-        return input;
-    }
-    root = input;
-    for (auto& p : fs::recursive_directory_iterator(input)) {
-        if (p.path().extension() == ".uvprojx" || p.path().extension() == ".ewp") {
-            root = p.path().parent_path();
-            return p.path();
-        }
-    }
-    for (auto& name : {"Makefile", "makefile"}) {
-        fs::path p = input / name;
-        if (fs::exists(p)) return p;
-    }
-    throw std::runtime_error("cannot find .uvprojx, .ewp, Makefile, or makefile");
-}
-
 static std::vector<std::string> parse_keil_targets(const fs::path& project) {
     std::vector<std::string> targets;
     for (auto& value : tags(read_file(project), "TargetName")) {
@@ -839,6 +890,123 @@ static std::vector<std::string> parse_keil_targets(const fs::path& project) {
         if (!value.empty()) targets.push_back(value);
     }
     return unique(targets);
+}
+
+struct ProjectSet {
+    std::vector<fs::path> keil;
+    std::vector<fs::path> iar;
+    std::vector<fs::path> makefile_roots;
+};
+
+struct ProjectChoice {
+    std::string kind;
+    fs::path project;
+    fs::path root;
+};
+
+static bool has_direct_makefile(const fs::path& root) {
+    return fs::exists(root / "Makefile") || fs::exists(root / "makefile");
+}
+
+static ProjectSet collect_projects(fs::path input) {
+    input = fs::weakly_canonical(input);
+    ProjectSet projects;
+    if (fs::is_regular_file(input)) {
+        std::string ext = lower_copy(input.extension().string());
+        std::string name = lower_copy(input.filename().string());
+        if (ext == ".uvprojx") projects.keil.push_back(input);
+        else if (ext == ".ewp") projects.iar.push_back(input);
+        else if (name == "makefile") projects.makefile_roots.push_back(input.parent_path());
+        return projects;
+    }
+
+    for (auto& p : fs::recursive_directory_iterator(input)) {
+        std::string ext = lower_copy(p.path().extension().string());
+        if (ext == ".uvprojx") projects.keil.push_back(p.path());
+        else if (ext == ".ewp") projects.iar.push_back(p.path());
+    }
+    std::sort(projects.keil.begin(), projects.keil.end());
+    std::sort(projects.iar.begin(), projects.iar.end());
+    if (has_direct_makefile(input)) projects.makefile_roots.push_back(input);
+    return projects;
+}
+
+static fs::path choose_project_file(const std::string& kind, std::vector<fs::path> files, const std::string& target) {
+    if (kind == "keil" && !target.empty()) {
+        std::vector<fs::path> matched;
+        std::string requested = normalize_name(target);
+        for (const auto& path : files) {
+            for (const auto& item : parse_keil_targets(path)) {
+                if (normalize_name(item) == requested) {
+                    matched.push_back(path);
+                    break;
+                }
+            }
+        }
+        if (matched.size() == 1) return matched[0];
+        if (!matched.empty()) files = matched;
+    }
+    if (files.size() == 1) return files[0];
+    std::vector<std::string> labels;
+    for (const auto& path : files) labels.push_back(path.string());
+    std::string selected = choose_from_list("Select " + kind + " project file:", labels);
+    if (selected.empty()) {
+        std::cout << "No project file selected, defaulting to: " << files[0].string() << "\n";
+        return files[0];
+    }
+    return fs::path(selected);
+}
+
+static ProjectChoice detect_project(fs::path input, std::string project_type, const std::string& target) {
+    ProjectSet projects = collect_projects(input);
+    if (project_type == "make") project_type = "makefile";
+
+    std::vector<std::pair<std::string, size_t>> available;
+    if (!projects.keil.empty()) available.push_back({"keil", projects.keil.size()});
+    if (!projects.iar.empty()) available.push_back({"iar", projects.iar.size()});
+    if (!projects.makefile_roots.empty()) available.push_back({"makefile", projects.makefile_roots.size()});
+    if (available.empty()) throw std::runtime_error("cannot find .uvprojx, .ewp, Makefile, or makefile");
+
+    std::string kind;
+    if (!project_type.empty()) {
+        kind = project_type;
+        if (kind != "keil" && kind != "iar" && kind != "makefile") throw std::runtime_error("unsupported project type: " + project_type);
+        if ((kind == "keil" && projects.keil.empty()) ||
+            (kind == "iar" && projects.iar.empty()) ||
+            (kind == "makefile" && projects.makefile_roots.empty())) {
+            throw std::runtime_error("cannot find project type: " + project_type);
+        }
+    } else if (available.size() == 1) {
+        kind = available[0].first;
+    } else {
+        std::vector<std::string> labels;
+        for (const auto& item : available) {
+            const std::string& item_kind = item.first;
+            fs::path first = item_kind == "keil" ? projects.keil[0] : (item_kind == "iar" ? projects.iar[0] : projects.makefile_roots[0]);
+            std::string label = item_kind + ": " + first.string();
+            if (item.second > 1) label += " (" + std::to_string(item.second) + " files)";
+            labels.push_back(label);
+        }
+        std::string selected = choose_from_list("Multiple project types found, select generator branch:", labels);
+        if (selected.empty()) {
+            kind = available[0].first;
+            std::cout << "No project type selected, defaulting to: " << kind << "\n";
+        } else {
+            auto colon = selected.find(':');
+            kind = colon == std::string::npos ? selected : selected.substr(0, colon);
+        }
+    }
+
+    if (kind == "makefile") {
+        fs::path root = projects.makefile_roots[0];
+        return {kind, root / "Makefile", root};
+    }
+    if (kind == "keil") {
+        fs::path project = choose_project_file(kind, projects.keil, target);
+        return {kind, project, project.parent_path()};
+    }
+    fs::path project = choose_project_file(kind, projects.iar, "");
+    return {kind, project, project.parent_path()};
 }
 
 static std::string find_uv4_executable(const Config& config, const std::string& override_path) {
@@ -925,8 +1093,9 @@ static int run_keil_uv4(
     (void)show_window; (void)uv4_override; (void)log_override; (void)list_targets;
     throw std::runtime_error("Keil UV4 command execution is only supported on Windows.");
 #else
-    fs::path root;
-    fs::path project = find_project(input, root);
+    ProjectChoice choice = detect_project(input, "keil", target);
+    fs::path root = choice.root;
+    fs::path project = choice.project;
     if (project.extension() != ".uvprojx") throw std::runtime_error("Keil UV4 requires a .uvprojx project: " + project.string());
     auto targets = parse_keil_targets(project);
     if (list_targets) {
@@ -939,7 +1108,8 @@ static int run_keil_uv4(
         }
         return 0;
     }
-    if (!target.empty() && !targets.empty() && std::find(targets.begin(), targets.end(), target) == targets.end()) {
+    if (!target.empty() && !targets.empty() &&
+        std::none_of(targets.begin(), targets.end(), [&](const std::string& item) { return normalize_name(item) == normalize_name(target); })) {
         std::cout << "Warning: target '" << target << "' was not found in project target list.\n";
         std::cout << "Available targets:\n";
         for (const auto& t : targets) std::cout << "  " << t << "\n";
@@ -987,10 +1157,12 @@ int main(int argc, char** argv) {
     bool keil_build = false;
     bool list_targets = false;
     bool keil_window = false;
+    bool dry_run = false;
     bool has_keil_jobs = false;
     int keil_jobs = 0;
     std::string keil_action = "build";
     std::string target;
+    std::string project_type;
     std::string keil_uv4;
     std::string keil_log;
     for (int i = 1; i < argc; ++i) {
@@ -999,6 +1171,8 @@ int main(int argc, char** argv) {
         else if (a == "-a" || a == "--absolute") absolute = true;
         else if (a == "-s" || a == "--setup") setup = true;
         else if (a == "--show-config") show_config = true;
+        else if ((a == "--project-type") && i + 1 < argc) project_type = argv[++i];
+        else if (a == "-n" || a == "--dry-run") dry_run = true;
         else if (a == "--keil_build") keil_build = true;
         else if (a == "--list-targets") list_targets = true;
         else if (a == "--keil_window") keil_window = true;
@@ -1013,13 +1187,16 @@ int main(int argc, char** argv) {
         else if (a == "-h" || a == "--help") {
             std::cout
                 << "Usage: Keil2JsonCpp [-p path] [-a] [--setup] [--show-config]\n"
+                << "       Keil2JsonCpp -p path [--project-type keil|iar|makefile|make] [-t target]\n"
                 << "       Keil2JsonCpp -p path --list-targets\n"
                 << "       Keil2JsonCpp -p path --keil_build [--keil_action build|rebuild|clean|flash|download|debug] [-t target]\n"
                 << "\nOptions:\n"
                 << "  -p, --path PATH       Project path or project file path\n"
                 << "  -a, --absolute        Format compile_commands.json paths as absolute\n"
+                << "  --project-type TYPE   Select generator branch: keil, iar, makefile, or make\n"
                 << "  -s, --setup           Run setup wizard and save config\n"
                 << "  --show-config         Print saved config and exit\n"
+                << "  -n, --dry-run         For Makefile projects skip the final make after make clean and make -n\n"
                 << "  --keil_build          Run Keil UV4 command instead of generating compile_commands.json\n"
                 << "  --keil_action ACTION  build, rebuild, clean, flash, download, or debug\n"
                 << "  -t, --target TARGET   Keil target name\n"
@@ -1056,18 +1233,19 @@ int main(int argc, char** argv) {
                 keil_log,
                 list_targets);
         }
-        fs::path root;
-        fs::path project = find_project(input, root);
+        ProjectChoice choice = detect_project(input, project_type, target);
+        fs::path root = choice.root;
+        fs::path project = choice.project;
         std::vector<Entry> entries;
-        if (project.extension() == ".uvprojx") {
+        if (choice.kind == "keil") {
             std::cout << "Detected Keil project\n";
-            entries = from_project_data(root, parse_uvprojx(project, root, config), absolute);
-        } else if (project.extension() == ".ewp") {
+            entries = from_project_data(root, parse_uvprojx(project, root, config, target), absolute);
+        } else if (choice.kind == "iar") {
             std::cout << "Detected IAR EWARM project\n";
             entries = from_project_data(root, parse_ewp(project, root, config), absolute);
         } else {
             std::cout << "Detected Makefile project\n";
-            entries = parse_makefile(root);
+            entries = parse_makefile(root, dry_run);
         }
         write_json(root / "compile_commands.json", root, entries, absolute);
         std::cout << "generate complete: " << (root / "compile_commands.json").string() << " (" << entries.size() << " files)\n";
