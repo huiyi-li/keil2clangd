@@ -1,113 +1,333 @@
 # Keil2Json
 
-Keil2Json 用于从 Keil MDK、IAR EWARM 和 Makefile 工程生成 `compile_commands.json`，供 clangd、VS Code C/C++ 插件等工具进行代码跳转、补全和诊断。
+[English](#english) | [中文](#中文)
 
-当前提供两个可执行版本：
+Keil2Json generates `compile_commands.json` for embedded projects that use Keil MDK, IAR EWARM, or Makefile-based builds. The generated database can be used by clangd, VS Code C/C++, and other language servers for code navigation, completion, and diagnostics.
 
-- `Keil2Json.exe`：Python 版打包产物，功能完整。
-- `Keil2JsonCpp.exe`：C++ 版实现，体积更小、启动更快。
+Keil2Json 可以从 Keil MDK、IAR EWARM 和 Makefile 工程生成 `compile_commands.json`，用于 clangd、VS Code C/C++ 等工具的代码跳转、补全和诊断。
 
-## 支持的工程
+## English
 
-- Keil MDK：扫描 `.uvprojx`。
-- IAR EWARM：扫描 `.ewp`。
-- Makefile：扫描 `Makefile` 或 `makefile`，通过 `make clean`、`make -n`、`make` 捕获编译命令。
+### Features
 
-生成结果会写入工程目录下的 `compile_commands.json`。
+- Keil MDK project support: parses `.uvprojx` files.
+- IAR EWARM project support: parses `.ewp` files.
+- Makefile project support: runs `make clean`, `make -n`, and `make` to capture compile commands.
+- Automatic CMSIS and C library include path injection.
+- Persistent setup wizard for Keil/IAR/CMSIS configuration.
+- Keil target selection for multi-target `.uvprojx` projects.
+- Project type selection when Keil, IAR, and Makefile projects exist in the same directory.
+- Optional Keil UV4 build, clean, flash, download, and debug actions.
+- Python executable for full compatibility and C++ executable for smaller size and faster startup.
 
-## 快速使用
+### Supported Projects
 
-在工程目录下运行：
+| Project type | File | Behavior |
+| --- | --- | --- |
+| Keil MDK | `.uvprojx` | Parses sources, include paths, defines, selected target, and ARMCC/ARMCLANG include paths. |
+| IAR EWARM | `.ewp` | Parses sources, include paths, defines, CMSIS include, and IAR C library include. |
+| Makefile | `Makefile` or `makefile` | Runs Make and extracts compiler commands from `make -n`. |
+
+### Quick Start
+
+Run in a project directory:
 
 ```powershell
 Keil2Json.exe
-```
-
-或使用 C++ 版：
-
-```powershell
 Keil2JsonCpp.exe
 ```
 
-指定工程路径：
+Specify a project directory or project file:
 
 ```powershell
 Keil2Json.exe -p D:\Project\Demo
 Keil2JsonCpp.exe -p D:\Project\Demo
 ```
 
-生成绝对路径形式的 `compile_commands.json`：
+Generate absolute paths:
 
 ```powershell
-Keil2Json.exe -p D:\Project\Demo -a
-Keil2JsonCpp.exe -p D:\Project\Demo -a
+Keil2Json.exe -p D:\Project\Demo --absolute
+Keil2JsonCpp.exe -p D:\Project\Demo --absolute
 ```
 
-## 首次配置
+### First-Time Setup
 
-首次使用建议先执行配置向导：
+Run the setup wizard before first use:
 
 ```powershell
 Keil2Json.exe --setup
-```
-
-或：
-
-```powershell
 Keil2JsonCpp.exe --setup
 ```
 
-短参数也可以使用：
+The wizard scans the Windows registry for Keil and IAR installations, then asks you to select or manually enter CMSIS and C library include paths.
+
+Configuration is stored permanently:
+
+| Platform | Path |
+| --- | --- |
+| Windows | `%APPDATA%\KeilFormat\config.json` |
+| Linux | `~/.config/KeilFormat/config.json` |
+
+Show the current configuration:
 
 ```powershell
-Keil2Json.exe -s
-Keil2JsonCpp.exe -s
+Keil2Json.exe --show-config
+Keil2JsonCpp.exe --show-config
 ```
 
-配置向导会尝试从 Windows 注册表扫描 Keil 和 IAR 的安装路径，并引导选择 CMSIS 版本或手动输入 CMSIS include 路径。
+### CMSIS and Toolchain Includes
 
-### Keil 配置内容
-
-Keil 配置会记录：
-
-- Keil 安装目录。
-- CMSIS include 路径，例如 `C:\Keil_v5\ARM\CMSIS\5.9.0\CMSIS\Core\Include`。
-- ARMCC include 路径。
-- ARMCLANG include 路径。
-
-Keil 的 CMSIS 路径优先根据 `TOOLS.INI` 中的 `RTEPATH` 推导。例如：
+For Keil, the tool reads `TOOLS.INI` and uses `RTEPATH` when available. For example:
 
 ```ini
 RTEPATH="D:\keil\Keil_v5\Arm\Packs"
 ```
 
-对应 CMSIS 包路径会按 `D:\keil\Keil_v5\Arm\Packs\ARM\CMSIS` 查找。
-
-### IAR 配置内容
-
-IAR 配置会记录：
-
-- IAR 安装目录。
-- CMSIS include 路径，通常来自 `IAR安装目录\arm\CMSIS`。
-- IAR C 库 include 路径，通常为 `IAR安装目录\arm\inc\c`。
-
-如果注册表没有扫描到 Keil 或 IAR，配置向导会提示手动输入对应路径；不需要的工具链可以直接跳过。
-
-## 配置保存位置
-
-配置会长期保存，不需要每个工程重复设置。
-
-Windows：
+The corresponding CMSIS package root is resolved as:
 
 ```text
-%APPDATA%\KeilFormat\config.json
+D:\keil\Keil_v5\Arm\Packs\ARM\CMSIS
 ```
 
-Linux：
+The setup also supports legacy Keil 4 style CMSIS paths, such as:
 
 ```text
-~/.config/KeilFormat/config.json
+D:\keil\Keil_v4\ARM\CMSIS\Include
 ```
+
+Keil compiler include paths are injected according to the selected project compiler:
+
+- ARMCC: `ARMCC\include`
+- ARMCLANG: `ARMCLANG\include`
+
+For IAR, common paths are:
+
+```text
+<IAR>\arm\CMSIS
+<IAR>\arm\inc\c
+```
+
+If no Keil or IAR installation is detected, the setup wizard asks for manual CMSIS and C library include paths.
+
+### CLI Options
+
+| Option | Description |
+| --- | --- |
+| `-p, --path <path>` | Project directory or project file. Defaults to the current directory. |
+| `-a, --absolute` | Write absolute paths in `compile_commands.json`. |
+| `--project-type <type>` | Select `keil`, `iar`, `makefile`, or `make`. |
+| `-s, --setup` | Run the persistent setup wizard. |
+| `--show-config` | Print the saved configuration. |
+| `-n, --dry-run` | For Makefile projects, run `make clean` and `make -n` only. |
+| `--keil_build` | Run a Keil UV4 action instead of generating `compile_commands.json`. |
+| `--keil_action <action>` | `build`, `rebuild`, `clean`, `flash`, `download`, or `debug`. |
+| `-t, --target <name>` | Keil target name for JSON generation or Keil UV4 actions. |
+| `--list-targets` | List Keil targets and exit. |
+| `--keil_uv4 <path>` | Override the `UV4.exe` path. |
+| `--keil_jobs <n>` | Keil UV4 `-j` value when the Keil window is hidden. Debug never uses `-j`. |
+| `--keil_log <path>` | Keil UV4 output log path. |
+| `--keil_window` | Show the Keil window. Debug always shows the window. |
+| `-h, --help` | Show help. |
+
+### Project Selection
+
+If a directory contains more than one project type, the tool asks which branch to use:
+
+- Keil: parse `.uvprojx` and generate JSON.
+- IAR: parse `.ewp` and generate JSON.
+- Makefile: run Make and generate JSON from captured compile commands.
+
+Use `--project-type` to skip the prompt:
+
+```powershell
+Keil2Json.exe -p . --project-type keil
+Keil2Json.exe -p . --project-type iar
+Keil2Json.exe -p . --project-type makefile
+```
+
+If multiple Keil or IAR project files exist, the tool asks you to select one. Makefile projects are directory-based: if both `Makefile` and `makefile` exist in the same directory, the tool does not ask which file to use; it runs the default Make behavior in that directory.
+
+### Keil Target Selection
+
+If a Keil project has one target, that target is used automatically. If it has multiple targets, the tool asks you to select one.
+
+You can also specify it directly:
+
+```powershell
+Keil2Json.exe -p . --project-type keil --target "Target 1"
+Keil2JsonCpp.exe -p . --project-type keil --target "Target 1"
+```
+
+### Keil UV4 Actions
+
+List targets:
+
+```powershell
+Keil2Json.exe -p . --list-targets
+Keil2JsonCpp.exe -p . --list-targets
+```
+
+Build a target:
+
+```powershell
+Keil2Json.exe -p . --keil_build --keil_action build -t "Target 1"
+Keil2JsonCpp.exe -p . --keil_build --keil_action build -t "Target 1"
+```
+
+Other actions:
+
+```powershell
+Keil2Json.exe -p . --keil_build --keil_action clean
+Keil2Json.exe -p . --keil_build --keil_action rebuild
+Keil2Json.exe -p . --keil_build --keil_action flash
+Keil2Json.exe -p . --keil_build --keil_action debug
+```
+
+Keil window behavior:
+
+- Non-debug actions pass `-j` by default, so the Keil window is hidden.
+- `--keil_window` disables `-j` and shows the Keil window.
+- `debug` always shows the Keil window and never passes `-j`.
+- `--keil_jobs` controls the `-j` value when the window is hidden.
+
+Keil log behavior:
+
+- `build` writes to `build_log` by default.
+- `clean`, `rebuild`, `flash`, and `debug` write to `Prg_Output` by default.
+- Use `--keil_log <path>` to override the log path.
+- Both Python and C++ versions stream Keil build logs while UV4 is running.
+
+### Output Path Rules
+
+The generated file is always named:
+
+```text
+compile_commands.json
+```
+
+Default output location:
+
+| Selected branch | Output directory |
+| --- | --- |
+| Keil | Directory containing the selected `.uvprojx`. |
+| IAR | Directory containing the selected `.ewp`. |
+| Makefile | The Makefile project directory. |
+
+Examples:
+
+```text
+D:\Project\App\App.uvprojx      -> D:\Project\App\compile_commands.json
+D:\Project\App\App.ewp          -> D:\Project\App\compile_commands.json
+D:\Project\App\Makefile         -> D:\Project\App\compile_commands.json
+```
+
+### Install from Release
+
+Download the archive for your platform from the GitHub Releases page and extract it.
+
+Recommended Windows usage:
+
+```powershell
+Keil2Json.exe -p .
+Keil2JsonCpp.exe -p .
+```
+
+If an old executable is still being used, check `PATH`:
+
+```powershell
+where Keil2Json.exe
+where Keil2JsonCpp.exe
+```
+
+### Build from Source
+
+Run the Python version directly:
+
+```powershell
+python Keil2Json.py -p .
+```
+
+Build the Python executable:
+
+```powershell
+python -m PyInstaller --clean --noconfirm --onefile --console --name Keil2Json --distpath dist Keil2Json.py
+```
+
+Build the C++ executable:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\cpp\build.ps1
+```
+
+The C++ executable is generated at:
+
+```text
+dist-cpp\Keil2JsonCpp.exe
+```
+
+## 中文
+
+### 功能特性
+
+- 支持 Keil MDK 工程：解析 `.uvprojx`。
+- 支持 IAR EWARM 工程：解析 `.ewp`。
+- 支持 Makefile 工程：执行 `make clean`、`make -n` 和 `make` 捕获编译命令。
+- 自动补充 CMSIS 和 C 库 include 路径。
+- 提供持久化配置向导，用于保存 Keil/IAR/CMSIS 配置。
+- 支持 Keil 多 Target 工程选择。
+- 当同一目录存在 Keil、IAR、Makefile 多种工程时，可交互选择或通过参数指定分支。
+- 支持调用 Keil UV4 执行 build、clean、flash、download 和 debug。
+- 提供 Python 完整功能版和 C++ 小体积快速启动版。
+
+### 支持的工程
+
+| 工程类型 | 文件 | 行为 |
+| --- | --- | --- |
+| Keil MDK | `.uvprojx` | 解析源文件、include、宏定义、选中的 Target，以及 ARMCC/ARMCLANG include。 |
+| IAR EWARM | `.ewp` | 解析源文件、include、宏定义、CMSIS include 和 IAR C 库 include。 |
+| Makefile | `Makefile` 或 `makefile` | 执行 Make，并从 `make -n` 输出中提取编译命令。 |
+
+### 快速开始
+
+在工程目录运行：
+
+```powershell
+Keil2Json.exe
+Keil2JsonCpp.exe
+```
+
+指定工程目录或工程文件：
+
+```powershell
+Keil2Json.exe -p D:\Project\Demo
+Keil2JsonCpp.exe -p D:\Project\Demo
+```
+
+生成绝对路径：
+
+```powershell
+Keil2Json.exe -p D:\Project\Demo --absolute
+Keil2JsonCpp.exe -p D:\Project\Demo --absolute
+```
+
+### 首次配置
+
+首次使用建议运行配置向导：
+
+```powershell
+Keil2Json.exe --setup
+Keil2JsonCpp.exe --setup
+```
+
+配置向导会扫描 Windows 注册表中的 Keil 和 IAR 安装路径，并引导选择或手动输入 CMSIS 和 C 库 include 路径。
+
+配置会长期保存：
+
+| 平台 | 路径 |
+| --- | --- |
+| Windows | `%APPDATA%\KeilFormat\config.json` |
+| Linux | `~/.config/KeilFormat/config.json` |
 
 查看当前配置：
 
@@ -116,103 +336,92 @@ Keil2Json.exe --show-config
 Keil2JsonCpp.exe --show-config
 ```
 
-重新配置时再次执行 `--setup` 即可覆盖旧配置。
+### CMSIS 和工具链 include
 
-## 参数说明
+Keil 会优先读取 `TOOLS.INI` 中的 `RTEPATH`。例如：
+
+```ini
+RTEPATH="D:\keil\Keil_v5\Arm\Packs"
+```
+
+对应 CMSIS 包路径会按下面的形式推导：
 
 ```text
--p, --path <path>    指定工程目录，默认是当前目录。
--a, --absolute       在 compile_commands.json 中输出绝对路径。
--s, --setup          运行配置向导，扫描并保存 Keil/IAR/CMSIS 配置。
---show-config        打印当前持久化配置。
---project-type       指定工程分支，可选 keil、iar、makefile、make。
--n, --dry-run        Makefile 工程只执行 make clean 和 make -n，不执行最终 make。
---keil_build         调用 Keil UV4 执行构建、清理、下载或调试。
---keil_action        Keil 操作，可选 build、rebuild、clean、flash、download、debug。
--t, --target         指定 Keil Target 名称。
---list-targets       列出 Keil 工程中的 Target。
---keil_uv4           手动指定 UV4.exe 路径。
---keil_jobs          Keil UV4 -j 参数，仅在隐藏 Keil 窗口时使用；debug 不使用 -j。
---keil_log           指定 Keil UV4 输出日志路径。
---keil_window        显示 Keil 窗口；debug 总是显示窗口。
--h, --help           显示帮助信息。
+D:\keil\Keil_v5\Arm\Packs\ARM\CMSIS
 ```
 
-示例：
+同时兼容 Keil 4 风格路径：
+
+```text
+D:\keil\Keil_v4\ARM\CMSIS\Include
+```
+
+Keil 工具链 include 会根据工程编译器自动补充：
+
+- ARMCC：`ARMCC\include`
+- ARMCLANG：`ARMCLANG\include`
+
+IAR 常见路径：
+
+```text
+<IAR>\arm\CMSIS
+<IAR>\arm\inc\c
+```
+
+如果没有扫描到 Keil 或 IAR，配置向导会提示手动输入 CMSIS 和 C 库 include 路径。
+
+### 命令行参数
+
+| 参数 | 说明 |
+| --- | --- |
+| `-p, --path <path>` | 工程目录或工程文件。默认当前目录。 |
+| `-a, --absolute` | 在 `compile_commands.json` 中写入绝对路径。 |
+| `--project-type <type>` | 指定 `keil`、`iar`、`makefile` 或 `make` 分支。 |
+| `-s, --setup` | 运行持久化配置向导。 |
+| `--show-config` | 打印已保存配置。 |
+| `-n, --dry-run` | Makefile 工程只执行 `make clean` 和 `make -n`。 |
+| `--keil_build` | 调用 Keil UV4 操作，不生成 `compile_commands.json`。 |
+| `--keil_action <action>` | `build`、`rebuild`、`clean`、`flash`、`download` 或 `debug`。 |
+| `-t, --target <name>` | Keil Target 名称，用于 JSON 生成或 UV4 操作。 |
+| `--list-targets` | 列出 Keil Target 后退出。 |
+| `--keil_uv4 <path>` | 手动指定 `UV4.exe` 路径。 |
+| `--keil_jobs <n>` | Keil 窗口隐藏时使用的 UV4 `-j` 参数。debug 不使用 `-j`。 |
+| `--keil_log <path>` | 指定 Keil UV4 日志输出路径。 |
+| `--keil_window` | 显示 Keil 窗口。debug 总是显示窗口。 |
+| `-h, --help` | 显示帮助信息。 |
+
+### 工程分支选择
+
+如果同一目录存在多种工程类型，工具会提示选择分支：
+
+- Keil：解析 `.uvprojx` 并生成 JSON。
+- IAR：解析 `.ewp` 并生成 JSON。
+- Makefile：执行 Make 并根据捕获的编译命令生成 JSON。
+
+使用 `--project-type` 可以跳过交互：
 
 ```powershell
-Keil2Json.exe -p .
-Keil2Json.exe --path D:\Project\Demo --absolute
-Keil2Json.exe --setup
-Keil2Json.exe --show-config
-Keil2Json.exe -p . --list-targets
 Keil2Json.exe -p . --project-type keil
 Keil2Json.exe -p . --project-type iar
 Keil2Json.exe -p . --project-type makefile
-Keil2Json.exe -p . --keil_build --keil_action build -t "Target 1"
 ```
 
-C++ 版参数保持一致：
+如果存在多个 Keil 或 IAR 工程文件，工具会继续提示选择具体工程。Makefile 按目录处理：即使同一目录同时存在 `Makefile` 和 `makefile`，也不会展示 Makefile 文件选择，而是按该目录默认 Make 行为执行。
 
-```powershell
-Keil2JsonCpp.exe -p .
-Keil2JsonCpp.exe --path D:\Project\Demo --absolute
-Keil2JsonCpp.exe --setup
-Keil2JsonCpp.exe --show-config
-Keil2JsonCpp.exe -p . --list-targets
-Keil2JsonCpp.exe -p . --project-type keil
-Keil2JsonCpp.exe -p . --project-type iar
-Keil2JsonCpp.exe -p . --project-type makefile
-Keil2JsonCpp.exe -p . --keil_build --keil_action build -t "Target 1"
-```
+### Keil Target 选择
 
-## 多工程文件目录
+如果 Keil 工程只有一个 Target，会自动使用该 Target。如果存在多个 Target，工具会提示选择。
 
-如果同一个目录下同时存在 `.uvprojx`、`.ewp`、`Makefile` 或 `makefile`，工具会先列出检测到的工程类型，让用户选择走 Keil、IAR 还是 Makefile 分支。
-
-也可以通过 `--project-type` 跳过交互：
-
-```powershell
-Keil2Json.exe -p . --project-type keil
-Keil2Json.exe -p . --project-type iar
-Keil2Json.exe -p . --project-type makefile
-```
-
-分支行为：
-
-- Keil 和 IAR 分支直接解析工程文件并生成 `compile_commands.json`。
-- Makefile 分支会执行 `make clean`、`make -n`，再执行 `make`，然后根据捕获到的编译命令生成 `compile_commands.json`。
-- Makefile 分支按目录执行默认 `make` 目标；即使目录中同时存在 `Makefile` 和 `makefile`，也不会展示 Makefile 文件选择。
-- 如果目录下存在多个同类型工程文件，工具会继续列出文件让用户选择。
-
-## Keil 工程生成流程
-
-运行工具后会递归查找 `.uvprojx` 文件。
-
-如果 Keil 工程只有一个 Target，会直接使用该 Target 生成 `compile_commands.json`。如果包含多个 Target，工具会列出 Target 让用户选择；也可以使用 `--target` 指定：
+也可以直接指定：
 
 ```powershell
 Keil2Json.exe -p . --project-type keil --target "Target 1"
+Keil2JsonCpp.exe -p . --project-type keil --target "Target 1"
 ```
 
-生成时会读取工程中的：
+### Keil UV4 操作
 
-- 源文件列表。
-- include 路径。
-- 宏定义。
-- 当前使用的 ARMCC 或 ARMCLANG 信息。
-
-工具会根据配置自动补充：
-
-- 已选择的 CMSIS include 路径。
-- ARMCC 工程补充 `ARMCC\include`。
-- ARMCLANG 工程补充 `ARMCLANG\include`。
-
-## Keil UV4 操作
-
-除生成 `compile_commands.json` 外，工具也可以直接调用 Keil 安装目录下的 `UV4.exe` 执行工程操作。该功能仅支持 Windows。
-
-列出工程 Target：
+列出 Target：
 
 ```powershell
 Keil2Json.exe -p . --list-targets
@@ -226,7 +435,7 @@ Keil2Json.exe -p . --keil_build --keil_action build -t "Target 1"
 Keil2JsonCpp.exe -p . --keil_build --keil_action build -t "Target 1"
 ```
 
-清理、重建、下载和调试：
+其他操作：
 
 ```powershell
 Keil2Json.exe -p . --keil_build --keil_action clean
@@ -235,97 +444,63 @@ Keil2Json.exe -p . --keil_build --keil_action flash
 Keil2Json.exe -p . --keil_build --keil_action debug
 ```
 
-C++ 版参数相同：
+Keil 窗口行为：
 
-```powershell
-Keil2JsonCpp.exe -p . --keil_build --keil_action clean
-Keil2JsonCpp.exe -p . --keil_build --keil_action rebuild
-Keil2JsonCpp.exe -p . --keil_build --keil_action flash
-Keil2JsonCpp.exe -p . --keil_build --keil_action debug
-```
+- 默认情况下，非 debug 操作会传入 `-j`，Keil 窗口隐藏。
+- 使用 `--keil_window` 时不传 `-j`，Keil 窗口显示。
+- `debug` 总是显示 Keil 窗口，并且永远不传 `-j`。
+- `--keil_jobs` 用于设置隐藏窗口时的 `-j` 数值。
 
-`UV4.exe` 查找顺序：
+Keil 日志行为：
 
-- `--keil_uv4` 指定的路径。
-- 配置文件中的 Keil 安装目录推导出的 `UV4\UV4.exe`。
-- 常见默认路径，例如 `C:\Keil_v5\UV4\UV4.exe`。
-- PATH 环境变量。
+- `build` 默认写入 `build_log`。
+- `clean`、`rebuild`、`flash`、`debug` 默认写入 `Prg_Output`。
+- 可通过 `--keil_log <path>` 指定日志路径。
+- Python 版和 C++ 版都会在 UV4 运行期间实时输出 Keil 构建日志。
 
-窗口行为：
+### 输出路径规则
 
-- 默认情况下，非 debug 操作会传入 `-j`，让 Keil 不弹出窗口。
-- 使用 `--keil_window` 时不传 `-j`，Keil 窗口会显示。
-- `debug` 操作必须弹出 Keil 窗口，因此永远不传 `-j`。
-- `--keil_jobs` 只在隐藏 Keil 窗口时作为 `-j` 的数值使用，默认 build 为 `-j16`，其他操作为 `-j0`。
-
-日志输出：
-
-- build 默认写入工程目录下的 `build_log`。
-- clean、rebuild、flash、debug 默认写入工程目录下的 `Prg_Output`。
-- 可以通过 `--keil_log <path>` 指定日志路径。
-
-## IAR 工程生成流程
-
-运行工具后会递归查找 `.ewp` 文件。
-
-生成时会读取工程中的：
-
-- 源文件列表。
-- include 路径。
-- 宏定义。
-
-工具会根据配置自动补充：
-
-- IAR CMSIS include 路径。
-- IAR C 库 include 路径，例如 `arm\inc\c`。
-
-## Makefile 工程生成流程
-
-运行工具后如果检测到 `Makefile` 或 `makefile`，会按以下顺序执行：
-
-```powershell
-make clean
-make -n
-make
-```
-
-其中 `make -n` 用于捕获实际编译命令，`make` 用于执行真实构建。工具会从输出中提取 `gcc`、`g++`、`clang`、`arm-none-eabi-gcc` 等编译命令并生成 `compile_commands.json`。
-
-如果工程的 Makefile 需要特定 target，请先确认默认 target 可以完整构建。
-
-## Release exe 使用方式
-
-从 Release 页面下载对应平台的压缩包，解压后可以直接运行。
-
-推荐将 exe 放到 PATH 目录中，例如 Windows 下：
+生成文件名固定为：
 
 ```text
-C:\MinGW\bin
+compile_commands.json
 ```
 
-之后可以在任意工程目录直接运行：
+默认输出位置：
+
+| 选择的分支 | 输出目录 |
+| --- | --- |
+| Keil | 选中的 `.uvprojx` 所在目录。 |
+| IAR | 选中的 `.ewp` 所在目录。 |
+| Makefile | Makefile 工程目录。 |
+
+示例：
+
+```text
+D:\Project\App\App.uvprojx      -> D:\Project\App\compile_commands.json
+D:\Project\App\App.ewp          -> D:\Project\App\compile_commands.json
+D:\Project\App\Makefile         -> D:\Project\App\compile_commands.json
+```
+
+### 从 Release 使用
+
+从 GitHub Releases 下载对应平台压缩包，解压后直接运行：
 
 ```powershell
 Keil2Json.exe -p .
+Keil2JsonCpp.exe -p .
 ```
 
-如果命令行运行的行为和刚下载的 exe 不一致，先检查 PATH 中是否存在旧版本：
+如果运行到旧版本，检查 `PATH`：
 
 ```powershell
 where Keil2Json.exe
 where Keil2JsonCpp.exe
 ```
 
-优先使用明确路径运行可以避免误用旧版本：
+### 从源码构建
 
-```powershell
-D:\Tools\Keil2Json.exe -p .
-D:\Tools\Keil2JsonCpp.exe -p .
-```
-
-## 从源码运行
-
-Python 版：
+直接运行 Python 版：
 
 ```powershell
 python Keil2Json.py -p .
@@ -337,13 +512,13 @@ python Keil2Json.py -p .
 python -m PyInstaller --clean --noconfirm --onefile --console --name Keil2Json --distpath dist Keil2Json.py
 ```
 
-C++ 版：
+构建 C++ exe：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\cpp\build.ps1
 ```
 
-生成文件位于：
+C++ 产物路径：
 
 ```text
 dist-cpp\Keil2JsonCpp.exe
