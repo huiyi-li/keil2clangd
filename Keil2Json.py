@@ -32,7 +32,7 @@ def config_path():
 
 class ConfigManager:
     DEFAULT_CONFIG = {
-        "version": 1,
+        "version": 2,
         "keil": {
             "install_path": "",
             "cmsis_path": "",
@@ -43,6 +43,12 @@ class ConfigManager:
             "install_path": "",
             "cmsis_path": "",
             "c_include": "",
+            "arm_install_path": "",
+            "arm_cmsis_path": "",
+            "arm_c_include": "",
+            "rl78_install_path": "",
+            "rl78_c_include": "",
+            "rl78_inc": "",
         },
     }
 
@@ -75,6 +81,17 @@ class ConfigManager:
             json.dump(self.config, f, indent=4, ensure_ascii=False)
 
     def get(self, section, key):
+        if section == "iar":
+            iar = self.config.get("iar", {})
+            if key == "arm_install_path":
+                val = iar.get("arm_install_path") or iar.get("install_path", "")
+                return val if val else None
+            if key == "arm_cmsis_path":
+                val = iar.get("arm_cmsis_path") or iar.get("cmsis_path", "")
+                return val if val else None
+            if key == "arm_c_include":
+                val = iar.get("arm_c_include") or iar.get("c_include", "")
+                return val if val else None
         value = self.config.get(section, {}).get(key, "")
         return value if value else None
 
@@ -164,6 +181,19 @@ class RegistryScanner:
                                 found.add(path)
         return sorted(found, key=len)
 
+    @classmethod
+    def find_iar_by_arch(cls, arch="arm"):
+        found = []
+        for p_str in cls.find_iar():
+            p = Path(p_str)
+            if arch == "arm":
+                if (p / "arm").is_dir() or (p / "arm" / "inc" / "c").is_dir():
+                    found.append(p_str)
+            elif arch == "rl78":
+                if (p / "rl78").is_dir() or (p / "rl78" / "inc" / "c").is_dir():
+                    found.append(p_str)
+        return found
+
 
 def normalize_install_path(value, tool):
     if not value:
@@ -175,11 +205,11 @@ def normalize_install_path(value, tool):
     path = path.resolve()
     leaf = path.name.lower()
 
-    # Registry values may point to C:\Keil_v5\ARM or C:\IAR...\arm.
+    # Registry values may point to C:\Keil_v5\ARM or C:\IAR...\arm or C:\IAR...\rl78.
     # Keep install_path as the IDE root so later path derivation does not add ARM/arm twice.
     if tool == "keil" and leaf == "arm":
         return str(path.parent)
-    if tool == "iar" and leaf == "arm":
+    if tool == "iar" and leaf in {"arm", "rl78"}:
         return str(path.parent)
 
     # Some registry values point one level below the root, for example a product/toolchain folder.
@@ -189,9 +219,9 @@ def normalize_install_path(value, tool):
         if (path.parent / "ARM" / "CMSIS").is_dir() or (path.parent / "TOOLS.INI").exists():
             return str(path.parent.resolve())
     elif tool == "iar":
-        if (path / "arm" / "CMSIS").is_dir() or (path / "arm" / "inc" / "c").is_dir():
+        if (path / "arm" / "CMSIS").is_dir() or (path / "arm" / "inc" / "c").is_dir() or (path / "rl78" / "inc" / "c").is_dir():
             return str(path)
-        if (path.parent / "arm" / "CMSIS").is_dir() or (path.parent / "arm" / "inc" / "c").is_dir():
+        if (path.parent / "arm" / "CMSIS").is_dir() or (path.parent / "arm" / "inc" / "c").is_dir() or (path.parent / "rl78" / "inc" / "c").is_dir():
             return str(path.parent.resolve())
 
     return str(path)
@@ -395,9 +425,15 @@ def find_cmsis_versions(install_path, tool):
     return versions
 
 
-def find_iar_c_include(iar_path):
+def find_iar_c_include(iar_path, arch="arm"):
     root = Path(normalize_install_path(iar_path, "iar") or iar_path)
-    include = ide_subdir_or_root(root, "arm") / "inc" / "c"
+    include = ide_subdir_or_root(root, arch) / "inc" / "c"
+    return str(include.resolve()) if include.is_dir() else ""
+
+
+def find_iar_inc(iar_path, arch="rl78"):
+    root = Path(normalize_install_path(iar_path, "iar") or iar_path)
+    include = ide_subdir_or_root(root, arch) / "inc"
     return str(include.resolve()) if include.is_dir() else ""
 
 
@@ -699,33 +735,91 @@ def first_run_setup(config_manager):
         if not armcc_include and not armclang_include:
             print("TOOLS.INI was not found or no ARMCC/ARMCLANG include path was detected.")
     else:
-        print("Keil install path was skipped. You can still configure include paths manually.")
-        config["keil"]["cmsis_path"] = prompt_path("Enter Keil CMSIS include path (Enter to skip): ")
-        config["keil"]["armcc_include"] = prompt_path("Enter Keil ARMCC include path (Enter to skip): ")
-        config["keil"]["armclang_include"] = prompt_path("Enter Keil ARMCLANG include path (Enter to skip): ")
+        print("Keil configuration skipped.")
 
-    iar_paths = RegistryScanner.find_iar()
-    if iar_paths:
-        index = choose_from_list("Detected IAR installations:", iar_paths)
-        iar_path = iar_paths[index - 1] if index > 0 else prompt_path("Enter IAR install path (Enter to skip): ")
+    iar_arm_paths = RegistryScanner.find_iar_by_arch("arm")
+    if iar_arm_paths:
+        index = choose_from_list("Detected IAR for ARM installations:", iar_arm_paths)
+        iar_arm_path = iar_arm_paths[index - 1] if index > 0 else prompt_path("Enter IAR for ARM install path (Enter to skip): ")
     else:
-        print("IAR was not detected from registry.")
-        iar_path = prompt_path("Enter IAR install path (Enter to skip): ")
+        iar_arm_path = prompt_path("Enter IAR for ARM install path (Enter to skip): ")
 
-    if iar_path:
-        config["iar"]["install_path"] = iar_path
-        config["iar"]["cmsis_path"] = choose_cmsis("iar", iar_path)
-        config["iar"]["c_include"] = find_iar_c_include(iar_path)
-        if not config["iar"]["c_include"]:
+    if iar_arm_path:
+        config["iar"]["arm_install_path"] = iar_arm_path
+        config["iar"]["arm_cmsis_path"] = choose_cmsis("iar", iar_arm_path)
+        config["iar"]["arm_c_include"] = find_iar_c_include(iar_arm_path, "arm")
+        if not config["iar"]["arm_c_include"]:
             print("IAR C include path was not found at arm/inc/c.")
-            config["iar"]["c_include"] = prompt_path("Enter IAR C include path (Enter to skip): ")
+            config["iar"]["arm_c_include"] = prompt_path("Enter IAR ARM C include path (Enter to skip): ")
+        config["iar"]["install_path"] = iar_arm_path
+        config["iar"]["cmsis_path"] = config["iar"]["arm_cmsis_path"]
+        config["iar"]["c_include"] = config["iar"]["arm_c_include"]
     else:
-        print("IAR install path was skipped. You can still configure include paths manually.")
-        config["iar"]["cmsis_path"] = prompt_path("Enter IAR CMSIS include path (Enter to skip): ")
-        config["iar"]["c_include"] = prompt_path("Enter IAR C include path (Enter to skip): ")
+        print("IAR for ARM configuration skipped.")
+
+    iar_rl78_paths = RegistryScanner.find_iar_by_arch("rl78")
+    if iar_rl78_paths:
+        index = choose_from_list("Detected IAR for RL78 installations:", iar_rl78_paths)
+        iar_rl78_path = iar_rl78_paths[index - 1] if index > 0 else prompt_path("Enter IAR for RL78 install path (Enter to skip): ")
+    else:
+        iar_rl78_path = prompt_path("Enter IAR for RL78 install path (Enter to skip): ")
+
+    if iar_rl78_path:
+        config["iar"]["rl78_install_path"] = iar_rl78_path
+        config["iar"]["rl78_c_include"] = find_iar_c_include(iar_rl78_path, "rl78")
+        if not config["iar"]["rl78_c_include"]:
+            print("IAR C include path was not found at rl78/inc/c.")
+            config["iar"]["rl78_c_include"] = prompt_path("Enter IAR RL78 C include path (Enter to skip): ")
+        config["iar"]["rl78_inc"] = find_iar_inc(iar_rl78_path, "rl78")
+        if not config["iar"]["rl78_inc"]:
+            print("IAR inc path was not found at rl78/inc.")
+            config["iar"]["rl78_inc"] = prompt_path("Enter IAR RL78 inc path (Enter to skip): ")
+    else:
+        print("IAR for RL78 configuration skipped.")
 
     config_manager.save()
     print(f"Configuration saved: {config_manager.path}")
+
+
+def parse_eww(eww_file):
+    tree = ET.parse(eww_file)
+    root = tree.getroot()
+    ws_dir = eww_file.parent.resolve()
+    existing = []
+    missing = []
+    for elem in root.findall(".//project/path"):
+        if not elem.text or not elem.text.strip():
+            continue
+        raw_path = elem.text.strip().replace("$WS_DIR$", str(ws_dir))
+        p = Path(raw_path)
+        if not p.is_absolute():
+            p = ws_dir / p
+        p = p.resolve()
+        if p.exists() and p.is_file():
+            existing.append(p)
+        else:
+            missing.append(p)
+    return existing, missing
+
+
+def parse_ewp_configurations(file_path):
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    configs = []
+    for cfg in root.findall(".//configuration"):
+        name_elem = cfg.find("name")
+        if name_elem is not None and name_elem.text and name_elem.text.strip():
+            configs.append(name_elem.text.strip())
+    return configs
+
+
+def parse_ewp_toolchain(file_path):
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    tc = root.find(".//toolchain/name")
+    if tc is not None and tc.text and tc.text.strip():
+        return tc.text.strip().lower()
+    return "arm"
 
 
 class CompileCommandsGenerator:
@@ -739,6 +833,8 @@ class CompileCommandsGenerator:
         self.project_root = None
         self.compiler = "arm-none-eabi-gcc"
         self.extra_args = ["-D__GNUC__"]
+        self.missing_iar = []
+        self.selected_config = None
 
     def unique(self, items):
         seen = set()
@@ -819,45 +915,131 @@ class CompileCommandsGenerator:
 
         return self.unique(abs_includes), self.unique([d.strip() for d in defines]), self.unique(source_files)
 
-    def parse_ewp(self, file_path):
+    def parse_ewp(self, file_path, target_config=None):
         tree = ET.parse(file_path)
         root = tree.getroot()
+        ewp_dir = Path(file_path).parent.resolve()
+
+        configs = []
+        cfg_nodes = {}
+        for cfg in root.findall(".//configuration"):
+            name_elem = cfg.find("name")
+            if name_elem is not None and name_elem.text and name_elem.text.strip():
+                cfg_name = name_elem.text.strip()
+                configs.append(cfg_name)
+                cfg_nodes[cfg_name] = cfg
+
+        chosen_config_name = None
+        if target_config:
+            for c in configs:
+                if c.casefold() == target_config.casefold():
+                    chosen_config_name = c
+                    break
+        if not chosen_config_name and configs:
+            if len(configs) == 1:
+                chosen_config_name = configs[0]
+            else:
+                default_name = next((c for c in configs if c.casefold() == "debug"), configs[0])
+                if sys.stdin.isatty():
+                    idx = choose_from_list(f"Select IAR configuration for {file_path.name}:", configs)
+                    chosen_config_name = configs[idx - 1] if idx > 0 else default_name
+                else:
+                    chosen_config_name = default_name
+
+        if chosen_config_name:
+            print(f"Using IAR configuration: {chosen_config_name}")
+            parse_nodes = [cfg_nodes[chosen_config_name]]
+        else:
+            parse_nodes = root.findall(".//configuration")
+
+        toolchain = "arm"
+        for pnode in parse_nodes:
+            tc_elem = pnode.find(".//toolchain/name")
+            if tc_elem is not None and tc_elem.text:
+                toolchain = tc_elem.text.strip().lower()
+                break
+
         include_paths = []
         defines = []
         source_files = []
 
-        for option in root.findall(".//configuration/settings/data/option"):
-            name_elem = option.find("name")
-            if name_elem is None or not name_elem.text:
-                continue
-            values = [s.text.strip() for s in option.findall("state") if s.text and s.text.strip()]
-            option_name = name_elem.text.strip()
-            if option_name in {"CCIncludePath2", "CCIncludePath"}:
-                include_paths.extend(values)
-            elif option_name in {"CCDefines", "CCDefines2"}:
-                defines.extend(values)
-
-        for group in root.findall(".//group"):
-            for file_elem in group.findall("file"):
-                name_elem = file_elem.find("name")
+        for pnode in parse_nodes:
+            for option in pnode.findall(".//settings/data/option"):
+                name_elem = option.find("name")
                 if name_elem is None or not name_elem.text:
                     continue
-                value = name_elem.text.strip().replace("$PROJ_DIR$", ".")
-                source = self.resolve_project_path(self.project_root, value)
-                if source:
-                    source_files.append(source)
+                values = [s.text.strip() for s in option.findall("state") if s.text and s.text.strip()]
+                option_name = name_elem.text.strip()
+                if option_name in {"CCIncludePath2", "CCIncludePath"}:
+                    include_paths.extend(values)
+                elif option_name in {"CCDefines", "CCDefines2"}:
+                    defines.extend(values)
+
+        for file_elem in root.findall(".//file"):
+            name_elem = file_elem.find("name")
+            if name_elem is None or not name_elem.text:
+                continue
+            value = name_elem.text.strip().replace("$PROJ_DIR$", str(ewp_dir))
+            source = self.resolve_project_path(self.project_root, value)
+            if source and self.is_source_file(source):
+                source_files.append(source)
 
         abs_includes = []
         for include in include_paths:
-            include = include.replace("$PROJ_DIR$", ".")
+            include = include.replace("$PROJ_DIR$", str(ewp_dir))
             resolved = self.resolve_project_path(self.project_root, include)
             if resolved:
                 abs_includes.append(resolved)
 
-        for key in ("cmsis_path", "c_include"):
-            include = self.config_manager.get("iar", key)
-            if include:
-                abs_includes.append(include)
+        if toolchain == "rl78":
+            self.compiler = "rl78-elf-gcc"
+            self.extra_args = [
+                "-D__GNUC__",
+                "-D__ICCRL78__=1",
+                "-D__near=",
+                "-D__far=",
+                "-D__saddr=",
+                "-D__sfr=",
+                "-D__callt=",
+                "-D__interrupt=",
+                "-D__root=",
+                "-D__no_init=",
+            ]
+            c_inc = self.config_manager.get("iar", "rl78_c_include")
+            inc = self.config_manager.get("iar", "rl78_inc")
+            if not c_inc or not inc:
+                rl78_root = self.config_manager.get("iar", "rl78_install_path")
+                if rl78_root:
+                    p_root = Path(rl78_root)
+                    if not c_inc:
+                        c_dir = ide_subdir_or_root(p_root, "rl78") / "inc" / "c"
+                        if c_dir.is_dir():
+                            c_inc = str(c_dir.resolve())
+                    if not inc:
+                        inc_dir = ide_subdir_or_root(p_root, "rl78") / "inc"
+                        if inc_dir.is_dir():
+                            inc = str(inc_dir.resolve())
+            if c_inc:
+                abs_includes.append(c_inc)
+            if inc:
+                abs_includes.append(inc)
+        else:
+            self.compiler = "arm-none-eabi-gcc"
+            self.extra_args = ["-D__GNUC__"]
+            cmsis = self.config_manager.get("iar", "arm_cmsis_path") or self.config_manager.get("iar", "cmsis_path")
+            c_inc = self.config_manager.get("iar", "arm_c_include") or self.config_manager.get("iar", "c_include")
+            if not cmsis or not c_inc:
+                arm_root = self.config_manager.get("iar", "arm_install_path") or self.config_manager.get("iar", "install_path")
+                if arm_root:
+                    p_root = Path(arm_root)
+                    if not cmsis:
+                        cmsis = cmsis_base(p_root, "iar")
+                    if not c_inc:
+                        c_inc = find_iar_c_include(p_root, "arm")
+            if cmsis:
+                abs_includes.append(str(cmsis))
+            if c_inc:
+                abs_includes.append(str(c_inc))
 
         return self.unique(abs_includes), self.unique([d.strip() for d in defines]), self.unique(source_files)
 
@@ -1019,23 +1201,47 @@ class CompileCommandsGenerator:
 
     def collect_projects(self):
         root = self.path.resolve()
+        projects = {"keil": [], "iar": [], "makefile": []}
+        missing_iar = []
         if root.is_file():
             suffix = root.suffix.lower()
             name = root.name.lower()
             if suffix == ".uvprojx":
-                return {"keil": [root], "iar": [], "makefile": []}
+                return {"keil": [root], "iar": [], "makefile": []}, []
             if suffix == ".ewp":
-                return {"keil": [], "iar": [root], "makefile": []}
+                return {"keil": [], "iar": [root], "makefile": []}, []
+            if suffix == ".eww":
+                existing, missing = parse_eww(root)
+                return {"keil": [], "iar": existing, "makefile": []}, missing
             if name == "makefile":
-                return {"keil": [], "iar": [], "makefile": [root.parent.resolve()]}
-            return {"keil": [], "iar": [], "makefile": []}
+                return {"keil": [], "iar": [], "makefile": [root.parent.resolve()]}, []
+            return projects, []
 
-        projects = {"keil": [], "iar": [], "makefile": []}
         projects["keil"] = sorted(root.glob("**/*.uvprojx"))
-        projects["iar"] = sorted(root.glob("**/*.ewp"))
         if (root / "Makefile").exists() or (root / "makefile").exists():
             projects["makefile"].append(root)
-        return projects
+
+        eww_files = sorted(root.glob("*.eww")) + sorted(root.glob("*/*.eww"))
+        seen_ewp = set()
+        iar_files = []
+        for eww in eww_files:
+            existing, missing = parse_eww(eww)
+            missing_iar.extend(missing)
+            for p in existing:
+                key = str(p).lower() if IS_WINDOWS else str(p)
+                if key not in seen_ewp:
+                    seen_ewp.add(key)
+                    iar_files.append(p)
+
+        for p in sorted(root.glob("**/*.ewp")):
+            key = str(p.resolve()).lower() if IS_WINDOWS else str(p.resolve())
+            if key not in seen_ewp:
+                seen_ewp.add(key)
+                iar_files.append(p.resolve())
+
+        projects["iar"] = iar_files
+        self.missing_iar = missing_iar
+        return projects, missing_iar
 
     def choose_project_file(self, project_type, files):
         if project_type == "makefile":
@@ -1063,11 +1269,77 @@ class CompileCommandsGenerator:
             return files[0]
         return files[index - 1]
 
+    def choose_iar_project_and_config(self, files):
+        target_ewp = None
+        target_cfg = None
+
+        if self.target:
+            raw_target = self.target.strip()
+            if ":" in raw_target or "/" in raw_target:
+                parts = re.split(r"[:/]", raw_target, maxsplit=1)
+                target_ewp = parts[0].strip()
+                target_cfg = parts[1].strip()
+            else:
+                for f in files:
+                    if f.stem.casefold() == raw_target.casefold():
+                        target_ewp = f.stem
+                        break
+                if not target_ewp:
+                    for f in files:
+                        cfgs = parse_ewp_configurations(f)
+                        if any(c.casefold() == raw_target.casefold() for c in cfgs):
+                            target_cfg = raw_target
+                            target_ewp = f.stem
+                            break
+
+        if target_ewp:
+            matched = [f for f in files if f.stem.casefold() == target_ewp.casefold()]
+            if not matched:
+                available = ", ".join(f.stem for f in files)
+                raise ValueError(f"IAR project not found: {target_ewp}. Available projects: {available}")
+            chosen_file = matched[0]
+        elif len(files) == 1:
+            chosen_file = files[0]
+        else:
+            labels = [str(path) for path in files]
+            index = choose_from_list("Select IAR project file:", labels)
+            if index <= 0:
+                print(f"No project file selected, defaulting to: {files[0]}")
+                chosen_file = files[0]
+            else:
+                chosen_file = files[index - 1]
+
+        configs = parse_ewp_configurations(chosen_file)
+        chosen_config = None
+        if target_cfg:
+            for c in configs:
+                if c.casefold() == target_cfg.casefold():
+                    chosen_config = c
+                    break
+            if not chosen_config:
+                available = ", ".join(configs)
+                raise ValueError(f"IAR configuration not found: {target_cfg}. Available configurations: {available}")
+        elif len(configs) == 1:
+            chosen_config = configs[0]
+        elif configs:
+            default_config = next((c for c in configs if c.casefold() == "debug"), configs[0])
+            if sys.stdin.isatty():
+                index = choose_from_list(f"Select IAR configuration for {chosen_file.name}:", configs)
+                if index > 0:
+                    chosen_config = configs[index - 1]
+                else:
+                    print(f"No configuration selected, defaulting to: {default_config}")
+                    chosen_config = default_config
+            else:
+                chosen_config = default_config
+
+        return chosen_file, chosen_config
+
     def detect_project(self):
-        projects = self.collect_projects()
+        projects, missing_iar = self.collect_projects()
         available = [(kind, files) for kind, files in projects.items() if files]
         if not available:
-            raise FileNotFoundError("cannot find .uvprojx, .ewp, Makefile, or makefile")
+            raise FileNotFoundError("cannot find .uvprojx, .ewp, .eww, Makefile, or makefile")
 
         if self.project_type:
             kind = self.project_type.lower()
@@ -1095,8 +1367,14 @@ class CompileCommandsGenerator:
             self.project_root = project.resolve()
             return project / "Makefile"
 
-        project = self.choose_project_file(kind, projects[kind])
-        self.project_root = project.parent.resolve() if project.is_file() else self.path.resolve()
+        if kind == "keil":
+            project = self.choose_project_file(kind, projects[kind])
+            self.project_root = self.path.resolve() if self.path.is_dir() else (project.parent.resolve() if project.is_file() else self.path.resolve())
+            return project
+
+        project, selected_config = self.choose_iar_project_and_config(projects["iar"])
+        self.selected_config = selected_config
+        self.project_root = self.path.resolve() if self.path.is_dir() else project.parent.resolve()
         return project
 
     def generate(self):
@@ -1109,8 +1387,9 @@ class CompileCommandsGenerator:
             includes, defines, sources = self.parse_uvprojx(project_file)
             entries = self.generate_entries(includes, defines, sources)
         elif suffix == ".ewp":
-            print("Detected IAR EWARM project")
-            includes, defines, sources = self.parse_ewp(project_file)
+            toolchain = parse_ewp_toolchain(project_file).upper()
+            print(f"Detected IAR {toolchain} project")
+            includes, defines, sources = self.parse_ewp(project_file, getattr(self, "selected_config", None))
             entries = self.generate_entries(includes, defines, sources)
         elif name in {"makefile"}:
             print("Detected Makefile project")
@@ -1123,10 +1402,58 @@ class CompileCommandsGenerator:
         print(f"generate complete: {output} ({style} path, {len(entries)} files)")
 
 
+def list_project_targets(project_path, config_manager=None, project_type=None):
+    generator = CompileCommandsGenerator(
+        path=project_path,
+        config_manager=config_manager,
+        project_type=project_type,
+    )
+    projects, missing_iar = generator.collect_projects()
+
+    if projects["keil"]:
+        print("=== Keil MDK Projects ===")
+        for prj in projects["keil"]:
+            print(f"Project: {prj}")
+            targets = parse_keil_targets(prj)
+            if targets:
+                print("  Targets:")
+                for item in targets:
+                    print(f"    {item}")
+            else:
+                print("  No TargetName found.")
+
+    if projects["iar"]:
+        print("=== IAR Projects ===")
+        for prj in projects["iar"]:
+            toolchain = parse_ewp_toolchain(prj).upper()
+            configs = parse_ewp_configurations(prj)
+            print(f"Project: {prj.stem} ({prj})")
+            print(f"  Toolchain: {toolchain}")
+            if configs:
+                print("  Configurations:")
+                for c in configs:
+                    print(f"    {c}")
+            else:
+                print("  No configurations found.")
+
+    if missing_iar:
+        for m in missing_iar:
+            print(f"Warning: Referenced project does not exist: {m}")
+
+    if not projects["keil"] and not projects["iar"]:
+        if projects["makefile"]:
+            print("=== Makefile Project ===")
+            print(f"Path: {projects['makefile'][0]}")
+        else:
+            print("No Keil or IAR projects found.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate compile_commands.json for Keil MDK, IAR EWARM, and Makefile projects"
     )
+    parser.add_argument("positional_path", nargs="?", default=None, help="Project path or project file path")
     parser.add_argument("--path", "-p", required=False, help="Project path or project file path")
     parser.add_argument("--absolute", "-a", action="store_true", help="Format paths as absolute")
     parser.add_argument("--project-type", choices=["keil", "iar", "makefile", "make"], help="Select generator branch when multiple project types exist")
@@ -1140,13 +1467,15 @@ def main():
         default="build",
         help="Keil UV4 action used with --keil_build",
     )
-    parser.add_argument("--target", "-t", help="Keil target name used for compile_commands.json generation or --keil_build")
-    parser.add_argument("--list-targets", action="store_true", help="List Keil targets and exit")
+    parser.add_argument("--target", "-t", help="Target / configuration name used for compile_commands.json generation or --keil_build")
+    parser.add_argument("--list-targets", action="store_true", help="List targets and exit")
     parser.add_argument("--keil_uv4", help="Override UV4.exe path")
     parser.add_argument("--keil_jobs", type=int, help="Keil UV4 -j value used when hiding the Keil window; debug never uses -j")
     parser.add_argument("--keil_log", help="Keil UV4 output log path")
     parser.add_argument("--keil_window", action="store_true", help="Show Keil window while running UV4; debug always shows the window")
     args = parser.parse_args()
+
+    project_path = args.path or args.positional_path
 
     manager = ConfigManager()
     if args.show_config:
@@ -1156,13 +1485,20 @@ def main():
 
     if args.setup or not manager.exists():
         first_run_setup(manager)
-        if args.setup and not args.path and not args.keil_build and not args.list_targets:
+        if args.setup and not project_path and not args.keil_build and not args.list_targets:
             return
 
     try:
-        if args.keil_build or args.list_targets:
+        if args.list_targets:
+            return list_project_targets(
+                project_path=project_path,
+                config_manager=manager,
+                project_type=args.project_type,
+            )
+
+        if args.keil_build:
             return run_keil_uv4(
-                project_path=args.path,
+                project_path=project_path,
                 action=args.keil_action,
                 target=args.target,
                 jobs=args.keil_jobs,
@@ -1170,11 +1506,11 @@ def main():
                 uv4_path=args.keil_uv4,
                 log_path=args.keil_log,
                 config_manager=manager,
-                list_targets=args.list_targets,
+                list_targets=False,
             )
 
         generator = CompileCommandsGenerator(
-            path=args.path,
+            path=project_path,
             absolute=args.absolute,
             config_manager=manager,
             dry_run=args.dry_run,
@@ -1190,3 +1526,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

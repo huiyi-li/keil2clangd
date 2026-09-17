@@ -1,3 +1,6 @@
+#ifdef _WIN32
+#include <io.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -27,6 +30,12 @@ struct Config {
     std::string iar_install_path;
     std::string iar_cmsis_path;
     std::string iar_c_include;
+    std::string iar_arm_install_path;
+    std::string iar_arm_cmsis_path;
+    std::string iar_arm_c_include;
+    std::string iar_rl78_install_path;
+    std::string iar_rl78_c_include;
+    std::string iar_rl78_inc;
 };
 
 struct Entry {
@@ -36,6 +45,7 @@ struct Entry {
 };
 
 struct ProjectData {
+    std::string toolchain;
     std::vector<std::string> includes;
     std::vector<std::string> defines;
     std::vector<std::string> sources;
@@ -163,6 +173,12 @@ static Config load_config() {
     c.iar_install_path = json_value(json, "iar_install_path");
     c.iar_cmsis_path = json_value(json, "iar_cmsis_path");
     c.iar_c_include = json_value(json, "iar_c_include");
+    c.iar_arm_install_path = json_value(json, "iar_arm_install_path");
+    c.iar_arm_cmsis_path = json_value(json, "iar_arm_cmsis_path");
+    c.iar_arm_c_include = json_value(json, "iar_arm_c_include");
+    c.iar_rl78_install_path = json_value(json, "iar_rl78_install_path");
+    c.iar_rl78_c_include = json_value(json, "iar_rl78_c_include");
+    c.iar_rl78_inc = json_value(json, "iar_rl78_inc");
     std::string keil = json_object(json, "keil");
     std::string iar = json_object(json, "iar");
     if (!keil.empty()) {
@@ -175,14 +191,26 @@ static Config load_config() {
         if (c.iar_install_path.empty()) c.iar_install_path = json_value(iar, "install_path");
         if (c.iar_cmsis_path.empty()) c.iar_cmsis_path = json_value(iar, "cmsis_path");
         if (c.iar_c_include.empty()) c.iar_c_include = json_value(iar, "c_include");
+        if (c.iar_arm_install_path.empty()) c.iar_arm_install_path = json_value(iar, "arm_install_path");
+        if (c.iar_arm_cmsis_path.empty()) c.iar_arm_cmsis_path = json_value(iar, "arm_cmsis_path");
+        if (c.iar_arm_c_include.empty()) c.iar_arm_c_include = json_value(iar, "arm_c_include");
+        if (c.iar_rl78_install_path.empty()) c.iar_rl78_install_path = json_value(iar, "rl78_install_path");
+        if (c.iar_rl78_c_include.empty()) c.iar_rl78_c_include = json_value(iar, "rl78_c_include");
+        if (c.iar_rl78_inc.empty()) c.iar_rl78_inc = json_value(iar, "rl78_inc");
     }
+    if (c.iar_arm_install_path.empty()) c.iar_arm_install_path = c.iar_install_path;
+    if (c.iar_arm_cmsis_path.empty()) c.iar_arm_cmsis_path = c.iar_cmsis_path;
+    if (c.iar_arm_c_include.empty()) c.iar_arm_c_include = c.iar_c_include;
     return c;
 }
 
 static void save_config(const Config& c) {
+    std::string arm_install = !c.iar_arm_install_path.empty() ? c.iar_arm_install_path : c.iar_install_path;
+    std::string arm_cmsis = !c.iar_arm_cmsis_path.empty() ? c.iar_arm_cmsis_path : c.iar_cmsis_path;
+    std::string arm_c_inc = !c.iar_arm_c_include.empty() ? c.iar_arm_c_include : c.iar_c_include;
     std::ostringstream ss;
     ss << "{\n";
-    ss << "  \"version\": 1,\n";
+    ss << "  \"version\": 2,\n";
     ss << "  \"keil\": {\n";
     ss << "    \"install_path\": \"" << json_escape_value(c.keil_install_path) << "\",\n";
     ss << "    \"cmsis_path\": \"" << json_escape_value(c.keil_cmsis_path) << "\",\n";
@@ -190,9 +218,15 @@ static void save_config(const Config& c) {
     ss << "    \"armclang_include\": \"" << json_escape_value(c.keil_armclang_include) << "\"\n";
     ss << "  },\n";
     ss << "  \"iar\": {\n";
-    ss << "    \"install_path\": \"" << json_escape_value(c.iar_install_path) << "\",\n";
-    ss << "    \"cmsis_path\": \"" << json_escape_value(c.iar_cmsis_path) << "\",\n";
-    ss << "    \"c_include\": \"" << json_escape_value(c.iar_c_include) << "\"\n";
+    ss << "    \"install_path\": \"" << json_escape_value(arm_install) << "\",\n";
+    ss << "    \"cmsis_path\": \"" << json_escape_value(arm_cmsis) << "\",\n";
+    ss << "    \"c_include\": \"" << json_escape_value(arm_c_inc) << "\",\n";
+    ss << "    \"arm_install_path\": \"" << json_escape_value(arm_install) << "\",\n";
+    ss << "    \"arm_cmsis_path\": \"" << json_escape_value(arm_cmsis) << "\",\n";
+    ss << "    \"arm_c_include\": \"" << json_escape_value(arm_c_inc) << "\",\n";
+    ss << "    \"rl78_install_path\": \"" << json_escape_value(c.iar_rl78_install_path) << "\",\n";
+    ss << "    \"rl78_c_include\": \"" << json_escape_value(c.iar_rl78_c_include) << "\",\n";
+    ss << "    \"rl78_inc\": \"" << json_escape_value(c.iar_rl78_inc) << "\"\n";
     ss << "  }\n";
     ss << "}\n";
     write_text(config_path(), ss.str());
@@ -387,7 +421,8 @@ static std::string normalize_install_path(std::string raw, const std::string& to
     if (!fs::is_directory(p, ec)) return "";
     p = fs::weakly_canonical(p, ec);
     std::string leaf = lower_copy(p.filename().string());
-    if ((tool == "keil" || tool == "iar") && leaf == "arm") p = p.parent_path();
+    if (tool == "keil" && leaf == "arm") p = p.parent_path();
+    if (tool == "iar" && (leaf == "arm" || leaf == "rl78")) p = p.parent_path();
     return fs::weakly_canonical(p, ec).string();
 }
 
@@ -450,6 +485,25 @@ static std::vector<std::string> scan_iar() {
 static std::vector<std::string> scan_keil() { return {}; }
 static std::vector<std::string> scan_iar() { return {}; }
 #endif
+
+static std::vector<std::string> scan_iar_by_arch(const std::string& arch) {
+    std::vector<std::string> all = scan_iar();
+    std::vector<std::string> out;
+    for (const auto& s : all) {
+        fs::path p(s);
+        std::error_code ec;
+        if (arch == "arm") {
+            if (fs::is_directory(p / "arm", ec) || fs::is_directory(p / "arm" / "inc" / "c", ec)) {
+                out.push_back(s);
+            }
+        } else if (arch == "rl78") {
+            if (fs::is_directory(p / "rl78", ec) || fs::is_directory(p / "rl78" / "inc" / "c", ec)) {
+                out.push_back(s);
+            }
+        }
+    }
+    return out;
+}
 
 static std::string choose_path(const std::string& title, const std::vector<std::string>& values) {
     std::cout << "\n" << title << "\n";
@@ -528,10 +582,11 @@ static std::string choose_cmsis_include_from_versions(const std::vector<std::pai
 }
 
 static void setup_config() {
-    Config c;
+    Config c = load_config();
     std::cout << "Keil2JsonCpp setup\nConfig file: " << config_path().string() << "\n";
-    c.keil_install_path = choose_path("Detected Keil installations:", scan_keil());
-    if (!c.keil_install_path.empty()) {
+    std::string keil = choose_path("Detected Keil installations:", scan_keil());
+    if (!keil.empty()) {
+        c.keil_install_path = keil;
         ToolsIni ini = parse_tools_ini(c.keil_install_path);
         c.keil_armcc_include = ini.armcc_include;
         c.keil_armclang_include = ini.armclang_include;
@@ -539,22 +594,35 @@ static void setup_config() {
             cmsis_versions_for_keil(c.keil_install_path),
             cmsis_base_from_keil(c.keil_install_path).string());
     } else {
-        std::cout << "Keil install path was skipped. You can still configure include paths manually.\n";
-        c.keil_cmsis_path = prompt_dir("Enter Keil CMSIS include path (Enter to skip): ");
-        c.keil_armcc_include = prompt_dir("Enter Keil ARMCC include path (Enter to skip): ");
-        c.keil_armclang_include = prompt_dir("Enter Keil ARMCLANG include path (Enter to skip): ");
+        std::cout << "Keil configuration skipped.\n";
     }
-    c.iar_install_path = choose_path("Detected IAR installations:", scan_iar());
-    if (!c.iar_install_path.empty()) {
-        fs::path root(c.iar_install_path);
-        c.iar_cmsis_path = choose_cmsis_include(root / "arm" / "CMSIS");
-        c.iar_c_include = path_if_dir(root / "arm" / "inc" / "c");
-        if (c.iar_c_include.empty()) c.iar_c_include = prompt_dir("Enter IAR C include path (Enter to skip): ");
+
+    std::string iar_arm = choose_path("Detected IAR for ARM installations:", scan_iar_by_arch("arm"));
+    if (!iar_arm.empty()) {
+        c.iar_arm_install_path = iar_arm;
+        c.iar_install_path = iar_arm;
+        fs::path root(iar_arm);
+        c.iar_arm_cmsis_path = choose_cmsis_include(root / "arm" / "CMSIS");
+        c.iar_cmsis_path = c.iar_arm_cmsis_path;
+        c.iar_arm_c_include = path_if_dir(root / "arm" / "inc" / "c");
+        if (c.iar_arm_c_include.empty()) c.iar_arm_c_include = prompt_dir("Enter IAR ARM C include path (Enter to skip): ");
+        c.iar_c_include = c.iar_arm_c_include;
     } else {
-        std::cout << "IAR install path was skipped. You can still configure include paths manually.\n";
-        c.iar_cmsis_path = prompt_dir("Enter IAR CMSIS include path (Enter to skip): ");
-        c.iar_c_include = prompt_dir("Enter IAR C include path (Enter to skip): ");
+        std::cout << "IAR ARM configuration skipped.\n";
     }
+
+    std::string iar_rl78 = choose_path("Detected IAR for RL78 installations:", scan_iar_by_arch("rl78"));
+    if (!iar_rl78.empty()) {
+        c.iar_rl78_install_path = iar_rl78;
+        fs::path root(iar_rl78);
+        c.iar_rl78_c_include = path_if_dir(root / "rl78" / "inc" / "c");
+        if (c.iar_rl78_c_include.empty()) c.iar_rl78_c_include = prompt_dir("Enter IAR RL78 C include path (Enter to skip): ");
+        c.iar_rl78_inc = path_if_dir(root / "rl78" / "inc");
+        if (c.iar_rl78_inc.empty()) c.iar_rl78_inc = prompt_dir("Enter IAR RL78 inc path (Enter to skip): ");
+    } else {
+        std::cout << "IAR RL78 configuration skipped.\n";
+    }
+
     save_config(c);
     std::cout << "Configuration saved: " << config_path().string() << "\n";
 }
@@ -695,28 +763,131 @@ static ProjectData parse_uvprojx(const fs::path& file, const fs::path& root, con
     return data;
 }
 
-static ProjectData parse_ewp(const fs::path& file, const fs::path& root, const Config& config) {
+static void parse_eww(const fs::path& eww_file, std::vector<fs::path>& existing, std::vector<fs::path>& missing) {
+    std::string xml = read_file(eww_file);
+    fs::path ws_dir = eww_file.parent_path();
+    std::regex re(R"(<project>\s*<path>\s*([^<]+)\s*</path>)", std::regex::icase);
+    for (auto it = std::sregex_iterator(xml.begin(), xml.end(), re); it != std::sregex_iterator(); ++it) {
+        std::string raw = trim((*it)[1].str());
+        raw = replace_all(raw, "$WS_DIR$", ws_dir.string());
+        fs::path p(raw);
+        if (!p.is_absolute()) p = ws_dir / p;
+        std::error_code ec;
+        p = fs::weakly_canonical(p, ec);
+        if (fs::exists(p, ec) && fs::is_regular_file(p, ec)) {
+            existing.push_back(p);
+        } else {
+            missing.push_back(p);
+        }
+    }
+}
+
+static std::vector<std::string> parse_ewp_configurations(const fs::path& project) {
+    std::string xml = read_file(project);
+    std::vector<std::string> configs;
+    std::regex re(R"(<configuration>\s*<name>\s*([^<]+)\s*</name>)", std::regex::icase);
+    for (auto it = std::sregex_iterator(xml.begin(), xml.end(), re); it != std::sregex_iterator(); ++it) {
+        std::string name = trim((*it)[1].str());
+        if (!name.empty()) configs.push_back(name);
+    }
+    return unique(configs);
+}
+
+static std::string parse_ewp_toolchain(const fs::path& project) {
+    std::string xml = read_file(project);
+    std::regex re(R"(<toolchain>\s*<name>\s*([^<]+)\s*</name>)", std::regex::icase);
+    std::smatch m;
+    if (std::regex_search(xml, m, re)) {
+        return trim(m[1].str());
+    }
+    return "ARM";
+}
+
+static ProjectData parse_ewp(const fs::path& file, const fs::path& root, const Config& config, const std::string& target_config = "") {
     std::string xml = read_file(file);
+    fs::path ewp_dir = file.parent_path();
     ProjectData data;
+
+    std::string chosen_cfg = target_config;
+    if (chosen_cfg.empty()) {
+        auto cfgs = parse_ewp_configurations(file);
+        for (const auto& c : cfgs) {
+            if (normalize_name(c) == "debug") {
+                chosen_cfg = c;
+                break;
+            }
+        }
+        if (chosen_cfg.empty() && !cfgs.empty()) chosen_cfg = cfgs[0];
+    }
+
+    std::string parse_xml = xml;
+    std::regex cfg_re(R"(<configuration>\s*([\s\S]*?)\s*</configuration>)", std::regex::icase);
+    if (!chosen_cfg.empty()) {
+        std::cout << "Using IAR configuration: " << chosen_cfg << "\n";
+        for (auto it = std::sregex_iterator(xml.begin(), xml.end(), cfg_re); it != std::sregex_iterator(); ++it) {
+            std::string block = (*it)[1].str();
+            std::string name = first_tag_text(block, "name");
+            if (normalize_name(name) == normalize_name(chosen_cfg)) {
+                parse_xml = block;
+                break;
+            }
+        }
+    }
+
+    std::regex tc_re(R"(<toolchain>\s*<name>\s*([^<]+)\s*</name>)", std::regex::icase);
+    std::smatch m;
+    if (std::regex_search(parse_xml, m, tc_re) || std::regex_search(xml, m, tc_re)) {
+        data.toolchain = trim(m[1].str());
+    } else {
+        data.toolchain = "ARM";
+    }
+
     std::regex option_re(R"(<option>\s*<name>\s*([^<]+)\s*</name>([\s\S]*?)</option>)", std::regex::icase);
     std::regex state_re(R"(<state>\s*([^<]+)\s*</state>)", std::regex::icase);
-    for (auto it = std::sregex_iterator(xml.begin(), xml.end(), option_re); it != std::sregex_iterator(); ++it) {
+    for (auto it = std::sregex_iterator(parse_xml.begin(), parse_xml.end(), option_re); it != std::sregex_iterator(); ++it) {
         std::string name = trim((*it)[1].str());
         std::string body = (*it)[2].str();
         for (auto sit = std::sregex_iterator(body.begin(), body.end(), state_re); sit != std::sregex_iterator(); ++sit) {
             std::string value = trim((*sit)[1].str());
-            value = replace_all(value, "$PROJ_DIR$", ".");
+            value = replace_all(value, "$PROJ_DIR$", ewp_dir.string());
             if (name == "CCIncludePath2" || name == "CCIncludePath") data.includes.push_back(slash(resolve_path(root, value)));
             if (name == "CCDefines" || name == "CCDefines2") data.defines.push_back(value);
         }
     }
-    for (auto& name : tags(xml, "name")) {
-        if (name.find(".c") == std::string::npos && name.find(".cpp") == std::string::npos && name.find(".s") == std::string::npos) continue;
-        name = replace_all(name, "$PROJ_DIR$", ".");
-        data.sources.push_back(slash(resolve_path(root, name)));
+    std::regex file_re(R"(<file>\s*<name>\s*([^<]+)\s*</name>)", std::regex::icase);
+    for (auto it = std::sregex_iterator(xml.begin(), xml.end(), file_re); it != std::sregex_iterator(); ++it) {
+        std::string name = trim((*it)[1].str());
+        std::string ext = lower_copy(fs::path(name).extension().string());
+        if (ext == ".c" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".s") {
+            name = replace_all(name, "$PROJ_DIR$", ewp_dir.string());
+            data.sources.push_back(slash(resolve_path(root, name)));
+        }
     }
-    if (!config.iar_cmsis_path.empty()) data.includes.push_back(config.iar_cmsis_path);
-    if (!config.iar_c_include.empty()) data.includes.push_back(config.iar_c_include);
+
+    if (lower_copy(data.toolchain) == "rl78") {
+        std::string rl78_c_inc = config.iar_rl78_c_include;
+        std::string rl78_inc = config.iar_rl78_inc;
+        if (rl78_c_inc.empty() && !config.iar_rl78_install_path.empty()) {
+            rl78_c_inc = path_if_dir(fs::path(config.iar_rl78_install_path) / "rl78" / "inc" / "c");
+        }
+        if (rl78_inc.empty() && !config.iar_rl78_install_path.empty()) {
+            rl78_inc = path_if_dir(fs::path(config.iar_rl78_install_path) / "rl78" / "inc");
+        }
+        if (!rl78_c_inc.empty()) data.includes.push_back(rl78_c_inc);
+        if (!rl78_inc.empty()) data.includes.push_back(rl78_inc);
+    } else {
+        std::string cmsis = !config.iar_arm_cmsis_path.empty() ? config.iar_arm_cmsis_path : config.iar_cmsis_path;
+        std::string c_inc = !config.iar_arm_c_include.empty() ? config.iar_arm_c_include : config.iar_c_include;
+        if (cmsis.empty() && !config.iar_arm_install_path.empty()) {
+            cmsis = choose_cmsis_include(fs::path(config.iar_arm_install_path) / "arm" / "CMSIS");
+        }
+        if (c_inc.empty() && !config.iar_arm_install_path.empty()) {
+            c_inc = path_if_dir(fs::path(config.iar_arm_install_path) / "arm" / "inc" / "c");
+        }
+        if (!cmsis.empty()) data.includes.push_back(cmsis);
+        if (!c_inc.empty()) data.includes.push_back(c_inc);
+    }
+
     data.includes = unique(data.includes);
     data.defines = unique(data.defines);
     data.sources = unique(data.sources);
@@ -868,12 +1039,28 @@ static void write_json(const fs::path& output, const fs::path& root, const std::
 
 static std::vector<Entry> from_project_data(const fs::path& root, const ProjectData& data, bool absolute) {
     std::vector<Entry> entries;
+    std::string compiler = "arm-none-eabi-gcc";
     std::vector<std::string> base = {"-D__GNUC__"};
+    if (lower_copy(data.toolchain) == "rl78") {
+        compiler = "rl78-elf-gcc";
+        base = {
+            "-D__GNUC__",
+            "-D__ICCRL78__=1",
+            "-D__near=",
+            "-D__far=",
+            "-D__saddr=",
+            "-D__sfr=",
+            "-D__callt=",
+            "-D__interrupt=",
+            "-D__root=",
+            "-D__no_init="
+        };
+    }
     for (auto& inc : data.includes) base.push_back("-I" + format_path(root, inc, absolute));
     for (auto& def : data.defines) base.push_back("-D" + def);
     for (auto& src : data.sources) {
         Entry e;
-        e.compiler = "arm-none-eabi-gcc";
+        e.compiler = compiler;
         e.file = src;
         e.args.push_back("-c");
         e.args.push_back(format_path(root, src, absolute));
@@ -895,6 +1082,7 @@ static std::vector<std::string> parse_keil_targets(const fs::path& project) {
 struct ProjectSet {
     std::vector<fs::path> keil;
     std::vector<fs::path> iar;
+    std::vector<fs::path> missing_iar;
     std::vector<fs::path> makefile_roots;
 };
 
@@ -902,6 +1090,7 @@ struct ProjectChoice {
     std::string kind;
     fs::path project;
     fs::path root;
+    std::string selected_config;
 };
 
 static bool has_direct_makefile(const fs::path& root) {
@@ -916,14 +1105,34 @@ static ProjectSet collect_projects(fs::path input) {
         std::string name = lower_copy(input.filename().string());
         if (ext == ".uvprojx") projects.keil.push_back(input);
         else if (ext == ".ewp") projects.iar.push_back(input);
+        else if (ext == ".eww") parse_eww(input, projects.iar, projects.missing_iar);
         else if (name == "makefile") projects.makefile_roots.push_back(input.parent_path());
         return projects;
     }
 
-    for (auto& p : fs::recursive_directory_iterator(input)) {
+    std::set<std::string> seen_iar;
+    std::error_code ec;
+    for (auto& p : fs::recursive_directory_iterator(input, ec)) {
+        std::string ext = lower_copy(p.path().extension().string());
+        if (ext == ".eww") {
+            std::vector<fs::path> ex, mis;
+            parse_eww(p.path(), ex, mis);
+            for (const auto& m : mis) projects.missing_iar.push_back(m);
+            for (const auto& e : ex) {
+                if (seen_iar.insert(lower_copy(e.string())).second) {
+                    projects.iar.push_back(e);
+                }
+            }
+        }
+    }
+    for (auto& p : fs::recursive_directory_iterator(input, ec)) {
         std::string ext = lower_copy(p.path().extension().string());
         if (ext == ".uvprojx") projects.keil.push_back(p.path());
-        else if (ext == ".ewp") projects.iar.push_back(p.path());
+        else if (ext == ".ewp") {
+            if (seen_iar.insert(lower_copy(p.path().string())).second) {
+                projects.iar.push_back(p.path());
+            }
+        }
     }
     std::sort(projects.keil.begin(), projects.keil.end());
     std::sort(projects.iar.begin(), projects.iar.end());
@@ -957,6 +1166,98 @@ static fs::path choose_project_file(const std::string& kind, std::vector<fs::pat
     return fs::path(selected);
 }
 
+static std::pair<fs::path, std::string> choose_iar_project_and_config(std::vector<fs::path> files, const std::string& target) {
+    std::string target_ewp;
+    std::string target_cfg;
+    if (!target.empty()) {
+        auto colon = target.find_first_of(":/");
+        if (colon != std::string::npos) {
+            target_ewp = target.substr(0, colon);
+            target_cfg = target.substr(colon + 1);
+        } else {
+            std::string req = normalize_name(target);
+            for (const auto& f : files) {
+                if (normalize_name(f.stem().string()) == req) {
+                    target_ewp = f.stem().string();
+                    break;
+                }
+            }
+            if (target_ewp.empty()) {
+                for (const auto& f : files) {
+                    auto cfgs = parse_ewp_configurations(f);
+                    for (const auto& c : cfgs) {
+                        if (normalize_name(c) == req) {
+                            target_cfg = c;
+                            target_ewp = f.stem().string();
+                            break;
+                        }
+                    }
+                    if (!target_ewp.empty()) break;
+                }
+            }
+        }
+    }
+
+    fs::path chosen_file;
+    if (!target_ewp.empty()) {
+        std::string req = normalize_name(target_ewp);
+        for (const auto& f : files) {
+            if (normalize_name(f.stem().string()) == req) {
+                chosen_file = f;
+                break;
+            }
+        }
+        if (chosen_file.empty()) {
+            throw std::runtime_error("IAR project not found: " + target_ewp);
+        }
+    } else if (files.size() == 1) {
+        chosen_file = files[0];
+    } else {
+        std::vector<std::string> labels;
+        for (const auto& p : files) labels.push_back(p.string());
+        std::string selected = choose_from_list("Select IAR project file:", labels);
+        chosen_file = selected.empty() ? files[0] : fs::path(selected);
+    }
+
+    auto configs = parse_ewp_configurations(chosen_file);
+    std::string chosen_config;
+    if (!target_cfg.empty()) {
+        std::string req = normalize_name(target_cfg);
+        for (const auto& c : configs) {
+            if (normalize_name(c) == req) {
+                chosen_config = c;
+                break;
+            }
+        }
+        if (chosen_config.empty()) {
+            throw std::runtime_error("IAR configuration not found: " + target_cfg);
+        }
+    } else if (configs.size() == 1) {
+        chosen_config = configs[0];
+    } else if (!configs.empty()) {
+        std::string def_cfg = configs[0];
+        for (const auto& c : configs) {
+            if (normalize_name(c) == "debug") {
+                def_cfg = c;
+                break;
+            }
+        }
+        bool is_interactive = false;
+#ifdef _WIN32
+        is_interactive = (_isatty(_fileno(stdin)) != 0);
+#else
+        is_interactive = (isatty(fileno(stdin)) != 0);
+#endif
+        if (is_interactive) {
+            std::string sel = choose_from_list("Select IAR configuration for " + chosen_file.filename().string() + ":", configs);
+            chosen_config = sel.empty() ? def_cfg : sel;
+        } else {
+            chosen_config = def_cfg;
+        }
+    }
+    return {chosen_file, chosen_config};
+}
+
 static ProjectChoice detect_project(fs::path input, std::string project_type, const std::string& target) {
     ProjectSet projects = collect_projects(input);
     if (project_type == "make") project_type = "makefile";
@@ -965,7 +1266,7 @@ static ProjectChoice detect_project(fs::path input, std::string project_type, co
     if (!projects.keil.empty()) available.push_back({"keil", projects.keil.size()});
     if (!projects.iar.empty()) available.push_back({"iar", projects.iar.size()});
     if (!projects.makefile_roots.empty()) available.push_back({"makefile", projects.makefile_roots.size()});
-    if (available.empty()) throw std::runtime_error("cannot find .uvprojx, .ewp, Makefile, or makefile");
+    if (available.empty()) throw std::runtime_error("cannot find .uvprojx, .ewp, .eww, Makefile, or makefile");
 
     std::string kind;
     if (!project_type.empty()) {
@@ -999,14 +1300,58 @@ static ProjectChoice detect_project(fs::path input, std::string project_type, co
 
     if (kind == "makefile") {
         fs::path root = projects.makefile_roots[0];
-        return {kind, root / "Makefile", root};
+        return {kind, root / "Makefile", root, ""};
     }
     if (kind == "keil") {
         fs::path project = choose_project_file(kind, projects.keil, target);
-        return {kind, project, project.parent_path()};
+        fs::path root = fs::is_directory(input) ? input : project.parent_path();
+        return {kind, project, root, ""};
     }
-    fs::path project = choose_project_file(kind, projects.iar, "");
-    return {kind, project, project.parent_path()};
+    auto [project, chosen_config] = choose_iar_project_and_config(projects.iar, target);
+    fs::path root = fs::is_directory(input) ? input : project.parent_path();
+    return {kind, project, root, chosen_config};
+}
+
+static int list_all_targets(const fs::path& input, const std::string& project_type) {
+    ProjectSet projects = collect_projects(input);
+    if (!projects.keil.empty() && (project_type.empty() || project_type == "keil")) {
+        std::cout << "=== Keil MDK Projects ===\n";
+        for (const auto& prj : projects.keil) {
+            std::cout << "Project: " << prj.string() << "\n";
+            auto targets = parse_keil_targets(prj);
+            if (targets.empty()) {
+                std::cout << "  No TargetName found.\n";
+            } else {
+                std::cout << "  Targets:\n";
+                for (const auto& t : targets) std::cout << "    " << t << "\n";
+            }
+        }
+    }
+    if (!projects.iar.empty() && (project_type.empty() || project_type == "iar")) {
+        std::cout << "=== IAR Projects ===\n";
+        for (const auto& prj : projects.iar) {
+            std::cout << "Project: " << prj.stem().string() << " (" << prj.string() << ")\n";
+            std::cout << "  Toolchain: " << parse_ewp_toolchain(prj) << "\n";
+            auto cfgs = parse_ewp_configurations(prj);
+            if (cfgs.empty()) {
+                std::cout << "  No configurations found.\n";
+            } else {
+                std::cout << "  Configurations:\n";
+                for (const auto& c : cfgs) std::cout << "    " << c << "\n";
+            }
+        }
+    }
+    for (const auto& m : projects.missing_iar) {
+        std::cout << "Warning: Referenced project does not exist: " << m.string() << "\n";
+    }
+    if (projects.keil.empty() && projects.iar.empty()) {
+        if (!projects.makefile_roots.empty()) {
+            std::cout << "=== Makefile Project ===\nPath: " << projects.makefile_roots[0].string() << "\n";
+        } else {
+            std::cout << "No Keil or IAR projects found.\n";
+        }
+    }
+    return 0;
 }
 
 static std::string find_uv4_executable(const Config& config, const std::string& override_path) {
@@ -1188,9 +1533,13 @@ int main(int argc, char** argv) {
     std::string project_type;
     std::string keil_uv4;
     std::string keil_log;
+    bool path_specified = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if ((a == "-p" || a == "--path") && i + 1 < argc) input = argv[++i];
+        if ((a == "-p" || a == "--path") && i + 1 < argc) {
+            input = argv[++i];
+            path_specified = true;
+        }
         else if (a == "-a" || a == "--absolute") absolute = true;
         else if (a == "-s" || a == "--setup") setup = true;
         else if (a == "--show-config") show_config = true;
@@ -1206,6 +1555,12 @@ int main(int argc, char** argv) {
         else if (a == "--keil_jobs" && i + 1 < argc) {
             keil_jobs = std::atoi(argv[++i]);
             has_keil_jobs = true;
+        }
+        else if (!a.empty() && a[0] != '-') {
+            if (!path_specified) {
+                input = a;
+                path_specified = true;
+            }
         }
         else if (a == "-h" || a == "--help") {
             std::cout
@@ -1231,6 +1586,7 @@ int main(int argc, char** argv) {
             return 0;
         }
     }
+    input = fs::absolute(input);
     try {
         if (show_config) {
             std::cout << "Config file: " << config_path().string() << "\n";
@@ -1243,7 +1599,10 @@ int main(int argc, char** argv) {
             if (setup && argc <= 2 && !keil_build && !list_targets) return 0;
         }
         Config config = load_config();
-        if (keil_build || list_targets) {
+        if (list_targets) {
+            return list_all_targets(input, project_type);
+        }
+        if (keil_build) {
             return run_keil_uv4(
                 input,
                 config,
@@ -1254,7 +1613,7 @@ int main(int argc, char** argv) {
                 keil_window || keil_action == "debug",
                 keil_uv4,
                 keil_log,
-                list_targets);
+                false);
         }
         ProjectChoice choice = detect_project(input, project_type, target);
         fs::path root = choice.root;
@@ -1264,8 +1623,9 @@ int main(int argc, char** argv) {
             std::cout << "Detected Keil project\n";
             entries = from_project_data(root, parse_uvprojx(project, root, config, target), absolute);
         } else if (choice.kind == "iar") {
-            std::cout << "Detected IAR EWARM project\n";
-            entries = from_project_data(root, parse_ewp(project, root, config), absolute);
+            std::string tc = parse_ewp_toolchain(project);
+            std::cout << "Detected IAR " << tc << " project\n";
+            entries = from_project_data(root, parse_ewp(project, root, config, choice.selected_config), absolute);
         } else {
             std::cout << "Detected Makefile project\n";
             entries = parse_makefile(root, dry_run);
